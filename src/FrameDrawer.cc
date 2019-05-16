@@ -32,6 +32,9 @@ namespace ORB_SLAM2
 FrameDrawer::FrameDrawer(Map* pMap):mpMap(pMap)
 {
     mState=Tracking::SYSTEM_NOT_READY;
+    //!< 初始化图像显示画布
+    //!< 包括：图像、特征点连线形成的轨迹（初始化时）、框（跟踪时的 MapPoint）、圈（跟踪时的特征点）
+    //!< ！！！固定画布大小为 640x480 ，3 个通道
     mIm = cv::Mat(480,640,CV_8UC3, cv::Scalar(0,0,0));
 }
 

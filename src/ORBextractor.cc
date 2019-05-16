@@ -412,6 +412,7 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
     iniThFAST(_iniThFAST), minThFAST(_minThFAST)
 {
+    // 初始化金字塔每一层的尺寸比率因子和方差
     mvScaleFactor.resize(nlevels);
     mvLevelSigma2.resize(nlevels);
     mvScaleFactor[0]=1.0f;
@@ -430,12 +431,16 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
         mvInvLevelSigma2[i]=1.0f/mvLevelSigma2[i];
     }
 
+    // 初始化金字塔图像层数
     mvImagePyramid.resize(nlevels);
 
+    // 将特征点分配到每一层图像金字塔，即每一层图像需要提取的特征点数
     mnFeaturesPerLevel.resize(nlevels);
     float factor = 1.0f / scaleFactor;
+    // 等比数列思想： Sn = a1 * (1-q)^n / (1-q) 当 q 不等于 1 时
+    // 已知提取的总特征点数 Sn = nfeatures， 比例因子 q = factor （金字塔比例因子的倒数） 先求第一层 a1
     float nDesiredFeaturesPerScale = nfeatures*(1 - factor)/(1 - (float)pow((double)factor, (double)nlevels));
-
+    // 求每一层分配到需要提取的特征点数，由于特征点数需要为正整数，所有将小数点后的残余或者不足统一放到最顶层
     int sumFeatures = 0;
     for( int level = 0; level < nlevels-1; level++ )
     {

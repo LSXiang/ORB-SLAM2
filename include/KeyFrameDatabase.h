@@ -60,10 +60,10 @@ public:
 protected:
 
   // Associated vocabulary
-  const ORBVocabulary* mpVoc;
+  const ORBVocabulary* mpVoc; //!< 预先训练好的字典
 
   // Inverted file
-  std::vector<list<KeyFrame*> > mvInvertedFile;
+  std::vector<list<KeyFrame*> > mvInvertedFile; //!< 倒排索引, mvInvertedFile[i] 表示包含了第 i 个 word id 的所有关键帧
 
   // Mutex
   std::mutex mMutex;

@@ -56,6 +56,10 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     float cx = fSettings["Camera.cx"];
     float cy = fSettings["Camera.cy"];
 
+    // 摄像头内参标定值
+    //     |fx  0   cx|
+    // K = |0   fy  cy|
+    //     |0   0   1 |
     cv::Mat K = cv::Mat::eye(3,3,CV_32F);
     K.at<float>(0,0) = fx;
     K.at<float>(1,1) = fy;
@@ -63,6 +67,8 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     K.at<float>(1,2) = cy;
     K.copyTo(mK);
 
+    // 图像矫正系数
+    // [k1 k2 p1 p2 k3]
     cv::Mat DistCoef(4,1,CV_32F);
     DistCoef.at<float>(0) = fSettings["Camera.k1"];
     DistCoef.at<float>(1) = fSettings["Camera.k2"];
@@ -76,6 +82,7 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     }
     DistCoef.copyTo(mDistCoef);
 
+    // 双目摄像头的基线与焦距的乘积，即： baseline * fx
     mbf = fSettings["Camera.bf"];
 
     float fps = fSettings["Camera.fps"];
@@ -110,17 +117,24 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
 
     // Load ORB parameters
 
+    // 每一帧提取的特征点数
     int nFeatures = fSettings["ORBextractor.nFeatures"];
+    // 建立图像金字塔时的变化尺度
     float fScaleFactor = fSettings["ORBextractor.scaleFactor"];
+    // 金字塔层数
     int nLevels = fSettings["ORBextractor.nLevels"];
+    //　提取 Fast 特征点的默认阈值
     int fIniThFAST = fSettings["ORBextractor.iniThFAST"];
     int fMinThFAST = fSettings["ORBextractor.minThFAST"];
 
+    // tracking 过程都会用到 mpORBextractorLeft 作为特征点提取器
     mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
 
+    // 如果是双目，tracking 过程中还会用到 mpORBextractorRight 作为特征点提取器
     if(sensor==System::STEREO)
         mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
 
+    // 在单目初始化的时候，会用 mpIniORBextractor 来作为特征点提取器，提取的特征点数比 tracking 过程多一倍
     if(sensor==System::MONOCULAR)
         mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
 
