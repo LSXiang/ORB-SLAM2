@@ -454,17 +454,21 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     const Point* pattern0 = (const Point*)bit_pattern_31_;
     std::copy(pattern0, pattern0 + npoints, std::back_inserter(pattern));
 
-    //This is for orientation
+    // This is for orientation
     // pre-compute the end of a row in a circular patch
+    // 这是为了求解强度距心，提前计算圆形图像块每一行半边像素个数（即为列数）
     umax.resize(HALF_PATCH_SIZE + 1);
 
+    // 在一个 半边长 为 15 的正方形中做一个内接圆，以圆心为坐标原点建立直角坐标系，然后求第一象限中四分之一圆的坐标
+    // 几何意义表示参考： #TODO
     int v, v0, vmax = cvFloor(HALF_PATCH_SIZE * sqrt(2.f) / 2 + 1);
     int vmin = cvCeil(HALF_PATCH_SIZE * sqrt(2.f) / 2);
-    const double hp2 = HALF_PATCH_SIZE*HALF_PATCH_SIZE;
+    const double hp2 = HALF_PATCH_SIZE*HALF_PATCH_SIZE; // 内接圆的半径
     for (v = 0; v <= vmax; ++v)
-        umax[v] = cvRound(sqrt(hp2 - v * v));
+        umax[v] = cvRound(sqrt(hp2 - v * v)); // 直角三角形的三边有 a^2 + b^2 = c^2
 
     // Make sure we are symmetric
+    // 确保对称性
     for (v = HALF_PATCH_SIZE, v0 = 0; v >= vmin; --v)
     {
         while (umax[v0] == umax[v0 + 1])
