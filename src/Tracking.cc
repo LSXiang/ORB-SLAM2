@@ -147,12 +147,14 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
 
     if(sensor==System::STEREO || sensor==System::RGBD)
     {
+        // 判断远近特征点的阈值，根据论文近特征点的定义通常为匹配深度值小于 40 倍基线
         mThDepth = mbf*(float)fSettings["ThDepth"]/fx;
         cout << endl << "Depth Threshold (Close/Far Points): " << mThDepth << endl;
     }
 
     if(sensor==System::RGBD)
     {
+        // 深度相机 disparity 转化为 depth 时的因子
         mDepthMapFactor = fSettings["DepthMapFactor"];
         if(fabs(mDepthMapFactor)<1e-5)
             mDepthMapFactor=1;
@@ -253,6 +255,7 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
 {
     mImGray = im;
 
+    // 步骤1： 将 RGB 或者 RGBA 图像转换成灰度图像
     if(mImGray.channels()==3)
     {
         if(mbRGB)
@@ -268,11 +271,13 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
             cvtColor(mImGray,mImGray,CV_BGRA2GRAY);
     }
 
-    if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
+    // 步骤2： 构造 Frame
+    if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET) // 没有成功初始化之前的状态就是 NO_IMAGES_YET
         mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
     else
         mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
+    // 步骤3: 跟踪
     Track();
 
     return mCurrentFrame.mTcw.clone();
@@ -280,6 +285,11 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
 
 void Tracking::Track()
 {
+    // track 包含两部分: 估计运动、跟踪局部地图
+
+    // mState 为 tracking 的状态机
+    // SYSTME_NOT_READY, NO_IMAGE_YET, NOT_INITIALIZED, OK, LOST
+    // 如果图像复位过、或者第一次运行，则为NO_IMAGE_YET状态
     if(mState==NO_IMAGES_YET)
     {
         mState = NOT_INITIALIZED;
@@ -290,6 +300,7 @@ void Tracking::Track()
     // Get Map Mutex -> Map cannot be changed
     unique_lock<mutex> lock(mpMap->mMutexMapUpdate);
 
+    // 1st. 初始化
     if(mState==NOT_INITIALIZED)
     {
         if(mSensor==System::STEREO || mSensor==System::RGBD)
@@ -574,23 +585,33 @@ void Tracking::StereoInitialization()
     }
 }
 
+// 单目初始化
+//
+// 并行地计算基础矩阵和单应性矩阵，选取其中一个模型，恢复出最开始两帧之间的相对姿态以及点云
+// 得到初始两帧的匹配、相对运动、初始MapPoints
 void Tracking::MonocularInitialization()
 {
-
+    // 如果单目初始器还没有被创建，则创建单目初始器
     if(!mpInitializer)
     {
         // Set Reference Frame
+        // 单目初始帧的特征点数必须大于100
         if(mCurrentFrame.mvKeys.size()>100)
         {
+            // 步骤1：得到用于初始化的第一帧，初始化需要两帧
             mInitialFrame = Frame(mCurrentFrame);
+            // 记录最近的一帧
             mLastFrame = Frame(mCurrentFrame);
+            // mvbPrevMatched 最大的情况就是所有特征点都被跟踪上
             mvbPrevMatched.resize(mCurrentFrame.mvKeysUn.size());
             for(size_t i=0; i<mCurrentFrame.mvKeysUn.size(); i++)
                 mvbPrevMatched[i]=mCurrentFrame.mvKeysUn[i].pt;
 
+            // 这两句是多余的
             if(mpInitializer)
                 delete mpInitializer;
 
+            // 由当前帧构造初始器 sigma:1.0 iterations:200
             mpInitializer =  new Initializer(mCurrentFrame,1.0,200);
 
             fill(mvIniMatches.begin(),mvIniMatches.end(),-1);

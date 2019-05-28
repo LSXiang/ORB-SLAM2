@@ -600,6 +600,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
     vector<pair<int,ExtractorNode*> > vSizeAndPointerToNode;
     vSizeAndPointerToNode.reserve(lNodes.size()*4);
 
+    // 根据兴趣点分布,利用 N 叉树方法对图像进行划分区域
     while(!bFinish)
     {
         iteration++;
@@ -612,6 +613,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
 
         vSizeAndPointerToNode.clear();
 
+        // 将目前的子区域进行划分
         while(lit!=lNodes.end())
         {
             if(lit->bNoMore)
@@ -624,7 +626,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
             {
                 // If more than one point, subdivide
                 ExtractorNode n1,n2,n3,n4;
-                lit->DivideNode(n1,n2,n3,n4);
+                lit->DivideNode(n1,n2,n3,n4); // 再细分成四个子区域
 
                 // Add childs if they contain points
                 if(n1.vKeys.size()>0)
@@ -679,7 +681,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
         {
             bFinish = true;
         }
-        else if(((int)lNodes.size()+nToExpand*3)>N)
+        else if(((int)lNodes.size()+nToExpand*3)>N)   // 当划分之后,所有 Node 数大于要求数目时
         {
 
             while(!bFinish)
@@ -690,6 +692,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
                 vector<pair<int,ExtractorNode*> > vPrevSizeAndPointerToNode = vSizeAndPointerToNode;
                 vSizeAndPointerToNode.clear();
 
+                // 对需要划分的部分进行排序,即对兴趣点数较多的区域惊醒划分
                 sort(vPrevSizeAndPointerToNode.begin(),vPrevSizeAndPointerToNode.end());
                 for(int j=vPrevSizeAndPointerToNode.size()-1;j>=0;j--)
                 {
@@ -748,6 +751,7 @@ vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>&
     }
 
     // Retain the best point in each node
+    // 保留每个区域响应值最大的一个兴趣点
     vector<cv::KeyPoint> vResultKeys;
     vResultKeys.reserve(nfeatures);
     for(list<ExtractorNode>::iterator lit=lNodes.begin(); lit!=lNodes.end(); lit++)
@@ -775,10 +779,12 @@ void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoin
 {
     allKeypoints.resize(nlevels);
 
-    const float W = 30;
+    const float W = 30; // 栅格大小
 
+    // 对每一层图像进行 FAST 角点提取
     for (int level = 0; level < nlevels; ++level)
     {
+        // 设置边界大小 默认为16
         const int minBorderX = EDGE_THRESHOLD-3;
         const int minBorderY = minBorderX;
         const int maxBorderX = mvImagePyramid[level].cols-EDGE_THRESHOLD+3;
@@ -814,10 +820,12 @@ void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoin
                 if(maxX>maxBorderX)
                     maxX = maxBorderX;
 
+                // 针对每一个栅格进行 FAST 角点提取
                 vector<cv::KeyPoint> vKeysCell;
                 FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
                      vKeysCell,iniThFAST,true);
 
+                // 初始阈值没有提取到角点，则改用小阈值重新进行一次提起
                 if(vKeysCell.empty())
                 {
                     FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
@@ -840,6 +848,7 @@ void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoin
         vector<KeyPoint> & keypoints = allKeypoints[level];
         keypoints.reserve(nfeatures);
 
+        // 根据 mnFeaturesPerLevel, 即该层的兴趣点数, 对特征点进行剔除
         keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
                                       minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
 
@@ -1059,6 +1068,7 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
     assert(image.type() == CV_8UC1 );
 
     // Pre-compute the scale pyramid
+    // 预先构建图像金字塔
     ComputePyramid(image);
 
     vector < vector<KeyPoint> > allKeypoints;
@@ -1090,11 +1100,11 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
         if(nkeypointsLevel==0)
             continue;
 
-        // preprocess the resized image
+        // preprocess the resized image 对图像进行高斯模糊
         Mat workingMat = mvImagePyramid[level].clone();
         GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
 
-        // Compute the descriptors
+        // Compute the descriptors 计算描述子
         Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
         computeDescriptors(workingMat, keypoints, desc, pattern);
 
@@ -1126,8 +1136,10 @@ void ORBextractor::ComputePyramid(cv::Mat image)
         // Compute the resized image
         if( level != 0 )
         {
+            // 使用线性插值构建不同大小的图像
             resize(mvImagePyramid[level-1], mvImagePyramid[level], sz, 0, 0, INTER_LINEAR);
 
+            // 为每层金字塔图像构造了一个边界上做了扩展的副本 (未使用，代码遗留？)
             copyMakeBorder(mvImagePyramid[level], temp, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
                            BORDER_REFLECT_101+BORDER_ISOLATED);            
         }

@@ -170,7 +170,7 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
     AssignFeaturesToGrid();
 }
 
-
+// 单目初始化
 Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth)
     :mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
      mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth)
@@ -195,6 +195,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
     if(mvKeys.empty())
         return;
 
+    // 调用 OpenCV 的矫正函数矫正 orb 提取的特征点
     UndistortKeyPoints();
 
     // Set no stereo information
@@ -207,7 +208,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
     // This is done only for the first Frame (or after a change in the calibration)
     if(mbInitialComputations)
     {
-        ComputeImageBounds(imGray);
+        ComputeImageBounds(imGray);   // 计算图像边界
 
         mfGridElementWidthInv=static_cast<float>(FRAME_GRID_COLS)/static_cast<float>(mnMaxX-mnMinX);
         mfGridElementHeightInv=static_cast<float>(FRAME_GRID_ROWS)/static_cast<float>(mnMaxY-mnMinY);
@@ -224,6 +225,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
 
     mb = mbf/fx;
 
+    // 标记特征点位于哪一个栅格中
     AssignFeaturesToGrid();
 }
 
@@ -403,6 +405,7 @@ void Frame::ComputeBoW()
 
 void Frame::UndistortKeyPoints()
 {
+    // 如果矫正参数为零的的话,则不需要进行矫正
     if(mDistCoef.at<float>(0)==0.0)
     {
         mvKeysUn=mvKeys;
@@ -410,6 +413,7 @@ void Frame::UndistortKeyPoints()
     }
 
     // Fill matrix with points
+    // N为提取的特征点数量，将N个特征点保存在N*2的mat中
     cv::Mat mat(N,2,CV_32F);
     for(int i=0; i<N; i++)
     {
@@ -418,6 +422,7 @@ void Frame::UndistortKeyPoints()
     }
 
     // Undistort points
+    // 调整mat的通道为2，矩阵的行列形状不变
     mat=mat.reshape(2);
     cv::undistortPoints(mat,mat,mK,mDistCoef,cv::Mat(),mK);
     mat=mat.reshape(1);

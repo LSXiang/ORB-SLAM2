@@ -119,14 +119,14 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
     {
         cerr << "ERROR: you called TrackStereo but input sensor was not set to STEREO." << endl;
         exit(-1);
-    }   
+    }
 
     // Check mode change
     {
         unique_lock<mutex> lock(mMutexMode);
         if(mbActivateLocalizationMode)
         {
-            mpLocalMapper->RequestStop();
+            mpLocalMapper->RequestStop(); // 停止建图
 
             // Wait until Local Mapping has effectively stopped
             while(!mpLocalMapper->isStopped())
@@ -134,13 +134,13 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
                 usleep(1000);
             }
 
-            mpTracker->InformOnlyTracking(true);
-            mbActivateLocalizationMode = false;
+            mpTracker->InformOnlyTracking(true);  // 定位时，只跟踪
+            mbActivateLocalizationMode = false;   // 防止重复执行
         }
         if(mbDeactivateLocalizationMode)
         {
             mpTracker->InformOnlyTracking(false);
-            mpLocalMapper->Release();
+            mpLocalMapper->Release();   // 启动建图
             mbDeactivateLocalizationMode = false;
         }
     }
