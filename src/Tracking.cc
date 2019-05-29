@@ -313,12 +313,16 @@ void Tracking::Track()
         if(mState!=OK)
             return;
     }
-    else
+    else  // 2nd. 跟踪
     {
         // System is initialized. Track Frame.
+        // bOK 为临时变量, 用于表示每个函数是否执行成功
         bool bOK;
 
         // Initial camera pose estimation using motion model or relocalization (if tracking is lost)
+        // 在 viewer 中有个开关 menuLocalizationMode, 有它控制是否 ActivateLocalizationMode, 并最终管控 mbOnlyTracking
+        // mbOnlyTracking 等于 false 表示正常 VO 模式（有地图更新）
+        // mbOnlyTracking 等于 true 表示用户手动选择定位模式,不插入关键帧,局部地图不工作
         if(!mbOnlyTracking)
         {
             // Local Mapping is activated. This is the normal behaviour, unless
@@ -622,6 +626,9 @@ void Tracking::MonocularInitialization()
     else
     {
         // Try to initialize
+        // 步骤2: 如果当前帧特征点大于100, 则得到用于单目初始化的第二帧
+        // 如果当前帧特征点太少,重新构造初始器
+        // 因此, 只有连续两帧的特征点个数都大于100时,才能继续进行初始化过程
         if((int)mCurrentFrame.mvKeys.size()<=100)
         {
             delete mpInitializer;
@@ -631,10 +638,14 @@ void Tracking::MonocularInitialization()
         }
 
         // Find correspondences
+        // 步骤3: 在 mInitialFrame 与 mCurrentFrame 中找匹配的特征点对
+        // mvbPrevMatched 为前一帧的特征点，存储了 mInitialFrame 中哪些点将进行接下来的匹配
+        // mvIniMatches 存储 mInitialFrame, mCurrentFrame 之间匹配的特征点
         ORBmatcher matcher(0.9,true);
         int nmatches = matcher.SearchForInitialization(mInitialFrame,mCurrentFrame,mvbPrevMatched,mvIniMatches,100);
 
         // Check if there are enough correspondences
+        // 步骤4：如果初始化的两帧之间的匹配点太少，重新初始化
         if(nmatches<100)
         {
             delete mpInitializer;
@@ -646,6 +657,7 @@ void Tracking::MonocularInitialization()
         cv::Mat tcw; // Current Camera Translation
         vector<bool> vbTriangulated; // Triangulated Correspondences (mvIniMatches)
 
+        // 步骤5：通过H模型或F模型进行单目初始化，得到两帧间相对运动、初始MapPoints
         if(mpInitializer->Initialize(mCurrentFrame, mvIniMatches, Rcw, tcw, mvIniP3D, vbTriangulated))
         {
             for(size_t i=0, iend=mvIniMatches.size(); i<iend;i++)

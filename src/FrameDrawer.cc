@@ -167,14 +167,18 @@ void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
 
 }
 
+// 将跟踪线程的数据拷贝到绘图线程（图像、特征点、地图、跟踪状态）
 void FrameDrawer::Update(Tracking *pTracker)
 {
     unique_lock<mutex> lock(mMutex);
+    // 拷贝跟踪线程的图像
     pTracker->mImGray.copyTo(mIm);
+    // 拷贝跟踪线程的特征点
     mvCurrentKeys=pTracker->mCurrentFrame.mvKeys;
     N = mvCurrentKeys.size();
     mvbVO = vector<bool>(N,false);
     mvbMap = vector<bool>(N,false);
+    // mbOnlyTracking 等于 false 表示正常 VO 模式（有地图更新），mbOnlyTracking 等于 true 表示用户手动选择定位模式
     mbOnlyTracking = pTracker->mbOnlyTracking;
 
 
@@ -190,6 +194,7 @@ void FrameDrawer::Update(Tracking *pTracker)
             MapPoint* pMP = pTracker->mCurrentFrame.mvpMapPoints[i];
             if(pMP)
             {
+                // 该 mappoints 可以被多帧观测到，则为有效的地图点
                 if(!pTracker->mCurrentFrame.mvbOutlier[i])
                 {
                     if(pMP->Observations()>0)

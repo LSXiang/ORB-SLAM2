@@ -407,6 +407,7 @@ int ORBmatcher::SearchForInitialization(Frame &F1, Frame &F2, vector<cv::Point2f
     int nmatches=0;
     vnMatches12 = vector<int>(F1.mvKeysUn.size(),-1);
 
+    // 旋转角度的柱状图/直方图
     vector<int> rotHist[HISTO_LENGTH];
     for(int i=0;i<HISTO_LENGTH;i++)
         rotHist[i].reserve(500);
@@ -417,54 +418,65 @@ int ORBmatcher::SearchForInitialization(Frame &F1, Frame &F2, vector<cv::Point2f
 
     for(size_t i1=0, iend1=F1.mvKeysUn.size(); i1<iend1; i1++)
     {
+        // 只选取参考帧中图像金字塔最底层的特征点用于匹配
         cv::KeyPoint kp1 = F1.mvKeysUn[i1];
         int level1 = kp1.octave;
         if(level1>0)
             continue;
 
+        // 获取当前帧中可能与参考帧匹配的特征点
         vector<size_t> vIndices2 = F2.GetFeaturesInArea(vbPrevMatched[i1].x,vbPrevMatched[i1].y, windowSize,level1,level1);
 
+        // 没有可能相关的对应点的话,继续寻找
         if(vIndices2.empty())
             continue;
 
+        // 取参考特征点的描述子
         cv::Mat d1 = F1.mDescriptors.row(i1);
 
         int bestDist = INT_MAX;
         int bestDist2 = INT_MAX;
         int bestIdx2 = -1;
 
+        // 寻找当前帧中获取可能匹配特征点中与参考帧特征描述子距离最近(或,最为匹配)的两个特征
         for(vector<size_t>::iterator vit=vIndices2.begin(); vit!=vIndices2.end(); vit++)
         {
             size_t i2 = *vit;
 
             cv::Mat d2 = F2.mDescriptors.row(i2);
 
+            // 计算描述子之间的距离,即两个描述子中不同 bit 的个数
             int dist = DescriptorDistance(d1,d2);
 
             if(vMatchedDistance[i2]<=dist)
                 continue;
 
-            if(dist<bestDist)
+            if(dist<bestDist) // dist < bestDist < bestDist2，更新 bestDist bestDist2
             {
                 bestDist2=bestDist;
                 bestDist=dist;
                 bestIdx2=i2;
             }
-            else if(dist<bestDist2)
+            else if(dist<bestDist2) // bestDist < dist < bestDist2，更新 bestDist2
             {
                 bestDist2=dist;
             }
         }
 
-        if(bestDist<=TH_LOW)
+        // 根据阈值 和 角度投票剔除误匹配
+        if(bestDist<=TH_LOW)  // 匹配距离（误差）小于阈值 TH_LOW : 50
         {
+            // 最佳匹配比次佳匹配明显要好,那么最佳匹配才真正靠谱
             if(bestDist<(float)bestDist2*mfNNratio)
             {
+                // 如果当前帧中的特征点先前被匹配过了,那么删除之前参考帧的匹配点
+                // 这里直接默认如果匹配冲突,直接使用后来检测的匹配,个人认为应该进行比较或者都不使用 #TODO
                 if(vnMatches21[bestIdx2]>=0)
                 {
                     vnMatches12[vnMatches21[bestIdx2]]=-1;
                     nmatches--;
                 }
+                // 记录当前帧与参考帧特征点匹配的对应序列
                 vnMatches12[i1]=bestIdx2;
                 vnMatches21[bestIdx2]=i1;
                 vMatchedDistance[bestIdx2]=bestDist;
@@ -472,6 +484,8 @@ int ORBmatcher::SearchForInitialization(Frame &F1, Frame &F2, vector<cv::Point2f
 
                 if(mbCheckOrientation)
                 {
+                    // angle：每个特征点在提取描述子时的旋转主方向角度，如果图像旋转了，这个角度将发生改变
+                    // 所有的特征点的角度变化应该是一致的，通过直方图统计得到最准确的角度变化值
                     float rot = F1.mvKeysUn[i1].angle-F2.mvKeysUn[bestIdx2].angle;
                     if(rot<0.0)
                         rot+=360.0f;
@@ -486,18 +500,22 @@ int ORBmatcher::SearchForInitialization(Frame &F1, Frame &F2, vector<cv::Point2f
 
     }
 
+    // 根据方向剔除误匹配的点
     if(mbCheckOrientation)
     {
         int ind1=-1;
         int ind2=-1;
         int ind3=-1;
 
+        // 计算rotHist中最大的三个的index
         ComputeThreeMaxima(rotHist,HISTO_LENGTH,ind1,ind2,ind3);
 
         for(int i=0; i<HISTO_LENGTH; i++)
         {
+            // 如果特征点的旋转角度变化量属于这三个组, 则保留
             if(i==ind1 || i==ind2 || i==ind3)
                 continue;
+            // 将除了 ind1 ind2 ind3 以外的匹配点去掉
             for(size_t j=0, jend=rotHist[i].size(); j<jend; j++)
             {
                 int idx1 = rotHist[i][j];
@@ -1598,6 +1616,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, KeyFrame *pKF, const set
     return nmatches;
 }
 
+// 取出直方图中值最大的三个 index
 void ORBmatcher::ComputeThreeMaxima(vector<int>* histo, const int L, int &ind1, int &ind2, int &ind3)
 {
     int max1=0;
@@ -1630,6 +1649,7 @@ void ORBmatcher::ComputeThreeMaxima(vector<int>* histo, const int L, int &ind1, 
         }
     }
 
+    // 如果第二大和第三大值不足最大值的十分之一的话, 将不统计
     if(max2<0.1f*(float)max1)
     {
         ind2=-1;
