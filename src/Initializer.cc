@@ -144,6 +144,7 @@ void Initializer::FindHomography(vector<bool> &vbMatchesInliers, float &score, c
     const int N = mvMatches12.size();
 
     // Normalize coordinates
+    // 将 mvKeys1 和 mvKey2 归一化到均值为0，一阶绝对矩为1，归一化矩阵分别为T1、T2
     vector<cv::Point2f> vPn1, vPn2;
     cv::Mat T1, T2;
     Normalize(mvKeys1,vPn1, T1);
@@ -151,6 +152,7 @@ void Initializer::FindHomography(vector<bool> &vbMatchesInliers, float &score, c
     cv::Mat T2inv = T2.inv();
 
     // Best Results variables
+    // 最终最佳的MatchesInliers与得分
     score = 0.0;
     vbMatchesInliers = vector<bool>(N,false);
 
@@ -158,6 +160,7 @@ void Initializer::FindHomography(vector<bool> &vbMatchesInliers, float &score, c
     vector<cv::Point2f> vPn1i(8);
     vector<cv::Point2f> vPn2i(8);
     cv::Mat H21i, H12i;
+    // 每次RANSAC的MatchesInliers与得分
     vector<bool> vbCurrentInliers(N,false);
     float currentScore;
 
@@ -169,16 +172,22 @@ void Initializer::FindHomography(vector<bool> &vbMatchesInliers, float &score, c
         {
             int idx = mvSets[it][j];
 
+            // vPn1i 和 vPn2i为匹配的特征点对的坐标
             vPn1i[j] = vPn1[mvMatches12[idx].first];
             vPn2i[j] = vPn2[mvMatches12[idx].second];
         }
 
+        // 计算单应性矩阵
         cv::Mat Hn = ComputeH21(vPn1i,vPn2i);
+
+        // 恢复原始的均值和尺度
         H21i = T2inv*Hn*T1;
         H12i = H21i.inv();
 
+        // 利用重投影误差为当次RANSAC的结果评分
         currentScore = CheckHomography(H21i, H12i, vbCurrentInliers, mSigma);
 
+        // 得到最优的vbMatchesInliers与score
         if(currentScore>score)
         {
             H21 = H21i.clone();
@@ -188,13 +197,18 @@ void Initializer::FindHomography(vector<bool> &vbMatchesInliers, float &score, c
     }
 }
 
-
+/**
+ * @brief 计算基础矩阵
+ *
+ * 假设场景为非平面情况下通过前两帧求取Fundamental矩阵(current frame 2 到 reference frame 1),并得到该模型的评分
+ */
 void Initializer::FindFundamental(vector<bool> &vbMatchesInliers, float &score, cv::Mat &F21)
 {
     // Number of putative matches
     const int N = vbMatchesInliers.size();
 
     // Normalize coordinates
+    // 将 mvKeys1 和 mvKey2 归一化到均值为0，一阶绝对矩为1，归一化矩阵分别为T1、T2
     vector<cv::Point2f> vPn1, vPn2;
     cv::Mat T1, T2;
     Normalize(mvKeys1,vPn1, T1);
@@ -202,6 +216,7 @@ void Initializer::FindFundamental(vector<bool> &vbMatchesInliers, float &score, 
     cv::Mat T2t = T2.t();
 
     // Best Results variables
+    // 最终最佳的MatchesInliers与得分
     score = 0.0;
     vbMatchesInliers = vector<bool>(N,false);
 
@@ -209,6 +224,7 @@ void Initializer::FindFundamental(vector<bool> &vbMatchesInliers, float &score, 
     vector<cv::Point2f> vPn1i(8);
     vector<cv::Point2f> vPn2i(8);
     cv::Mat F21i;
+    // 每次RANSAC的MatchesInliers与得分
     vector<bool> vbCurrentInliers(N,false);
     float currentScore;
 
@@ -220,16 +236,21 @@ void Initializer::FindFundamental(vector<bool> &vbMatchesInliers, float &score, 
         {
             int idx = mvSets[it][j];
 
+            // vPn1i 和 vPn2i为匹配的特征点对的坐标
             vPn1i[j] = vPn1[mvMatches12[idx].first];
             vPn2i[j] = vPn2[mvMatches12[idx].second];
         }
 
+        // 计算基础矩阵
         cv::Mat Fn = ComputeF21(vPn1i,vPn2i);
 
+        // 恢复原始的均值和尺度
         F21i = T2t*Fn*T1;
 
+        // 利用重投影误差为当次RANSAC的结果评分
         currentScore = CheckFundamental(F21i, vbCurrentInliers, mSigma);
 
+        // 得到最优的vbMatchesInliers与score
         if(currentScore>score)
         {
             F21 = F21i.clone();
@@ -239,12 +260,29 @@ void Initializer::FindFundamental(vector<bool> &vbMatchesInliers, float &score, 
     }
 }
 
-
+// |x'|     | h1 h2 h3 ||x|
+// |y'| = a | h4 h5 h6 ||y|  简写: x' = a H x, a为一个尺度因子
+// |1 |     | h7 h8 h9 ||1|
+// 使用DLT(direct linear tranform)求解该模型
+// x' = a H x
+// ---> (x') 叉乘 (H x)  = 0
+// ---> Ah = 0
+// A = | 0  0  0 -x -y -1 xy' yy' y'|  h = | h1 h2 h3 h4 h5 h6 h7 h8 h9 |
+//     |-x -y -1  0  0  0 xx' yx' x'|
+// 通过SVD求解Ah = 0, A'A最小特征值对应的特征向量即为解
+/**
+ * @brief 从特征点匹配求homography（normalized DLT）
+ *
+ * @param  vP1 归一化后的点, in reference frame
+ * @param  vP2 归一化后的点, in current frame
+ * @return     单应矩阵
+ * @see        Multiple View Geometry in Computer Vision - Algorithm 4.2 p109
+ */
 cv::Mat Initializer::ComputeH21(const vector<cv::Point2f> &vP1, const vector<cv::Point2f> &vP2)
 {
     const int N = vP1.size();
 
-    cv::Mat A(2*N,9,CV_32F);
+    cv::Mat A(2*N,9,CV_32F); // 2N*9
 
     for(int i=0; i<N; i++)
     {
@@ -279,9 +317,19 @@ cv::Mat Initializer::ComputeH21(const vector<cv::Point2f> &vP1, const vector<cv:
 
     cv::SVDecomp(A,w,u,vt,cv::SVD::MODIFY_A | cv::SVD::FULL_UV);
 
-    return vt.row(8).reshape(0, 3);
+    return vt.row(8).reshape(0, 3); // v的最后一列
 }
 
+// x'Fx = 0 整理可得：Af = 0
+// A = | x'x x'y x' y'x y'y y' x y 1 |, f = | f1 f2 f3 f4 f5 f6 f7 f8 f9 |
+// 通过SVD求解Af = 0, A'A最小特征值对应的特征向量即为解
+/**
+ * @brief 从特征点匹配求fundamental matrix（normalized 8点法）
+ * @param  vP1 归一化后的点, in reference frame
+ * @param  vP2 归一化后的点, in current frame
+ * @return     基础矩阵
+ * @see        Multiple View Geometry in Computer Vision - Algorithm 11.1 p282 (中文版 p191)
+ */
 cv::Mat Initializer::ComputeF21(const vector<cv::Point2f> &vP1,const vector<cv::Point2f> &vP2)
 {
     const int N = vP1.size();
@@ -310,19 +358,30 @@ cv::Mat Initializer::ComputeF21(const vector<cv::Point2f> &vP1,const vector<cv::
 
     cv::SVDecomp(A,w,u,vt,cv::SVD::MODIFY_A | cv::SVD::FULL_UV);
 
-    cv::Mat Fpre = vt.row(8).reshape(0, 3);
+    cv::Mat Fpre = vt.row(8).reshape(0, 3); // v的最后一列
 
     cv::SVDecomp(Fpre,w,u,vt,cv::SVD::MODIFY_A | cv::SVD::FULL_UV);
 
-    w.at<float>(2)=0;
+    w.at<float>(2)=0; // 秩2约束，将第3个奇异值设为0
 
     return  u*cv::Mat::diag(w)*vt;
 }
 
+/**
+ * @brief 对给定的homography matrix打分
+ *
+ * @see
+ * - Author's paper - IV. AUTOMATIC MAP INITIALIZATION （2）
+ * - Multiple View Geometry in Computer Vision - symmetric transfer errors: 4.2.2 Geometric distance
+ * - Multiple View Geometry in Computer Vision - model selection 4.7.1 RANSAC
+ */
 float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vector<bool> &vbMatchesInliers, float sigma)
 {   
     const int N = mvMatches12.size();
 
+    // |h11 h12 h13|
+    // |h21 h22 h23|
+    // |h31 h32 h33|
     const float h11 = H21.at<float>(0,0);
     const float h12 = H21.at<float>(0,1);
     const float h13 = H21.at<float>(0,2);
@@ -333,6 +392,9 @@ float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vecto
     const float h32 = H21.at<float>(2,1);
     const float h33 = H21.at<float>(2,2);
 
+    // |h11inv h12inv h13inv|
+    // |h21inv h22inv h23inv|
+    // |h31inv h32inv h33inv|
     const float h11inv = H12.at<float>(0,0);
     const float h12inv = H12.at<float>(0,1);
     const float h13inv = H12.at<float>(0,2);
@@ -347,10 +409,13 @@ float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vecto
 
     float score = 0;
 
-    const float th = 5.991;
+    // 基于卡方检验计算出的阈值（假设测量有一个像素的偏差）
+    const float th = 5.991; // 二维情况下,选着显著水平: 0.05
 
+    // 信息矩阵，方差平方的倒数
     const float invSigmaSquare = 1.0/(sigma*sigma);
 
+    // N对特征匹配点
     for(int i=0; i<N; i++)
     {
         bool bIn = true;
@@ -365,13 +430,18 @@ float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vecto
 
         // Reprojection error in first image
         // x2in1 = H12*x2
-
+        // 将图像2中的特征点单应到图像1中
+        // |u1|   |h11inv h12inv h13inv||u2|
+        // |v1| = |h21inv h22inv h23inv||v2|
+        // |1 |   |h31inv h32inv h33inv||1 |
         const float w2in1inv = 1.0/(h31inv*u2+h32inv*v2+h33inv);
         const float u2in1 = (h11inv*u2+h12inv*v2+h13inv)*w2in1inv;
         const float v2in1 = (h21inv*u2+h22inv*v2+h23inv)*w2in1inv;
 
+        // 计算重投影误差
         const float squareDist1 = (u1-u2in1)*(u1-u2in1)+(v1-v2in1)*(v1-v2in1);
 
+        // 根据方差归一化误差
         const float chiSquare1 = squareDist1*invSigmaSquare;
 
         if(chiSquare1>th)
@@ -381,7 +451,7 @@ float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vecto
 
         // Reprojection error in second image
         // x1in2 = H21*x1
-
+        // 将图像1中的特征点单应到图像2中
         const float w1in2inv = 1.0/(h31*u1+h32*v1+h33);
         const float u1in2 = (h11*u1+h12*v1+h13)*w1in2inv;
         const float v1in2 = (h21*u1+h22*v1+h23)*w1in2inv;
@@ -404,6 +474,14 @@ float Initializer::CheckHomography(const cv::Mat &H21, const cv::Mat &H12, vecto
     return score;
 }
 
+/**
+ * @brief 对给定的fundamental matrix打分
+ *
+ * @see
+ * - Author's paper - IV. AUTOMATIC MAP INITIALIZATION （2）
+ * - Multiple View Geometry in Computer Vision - symmetric transfer errors: 4.2.2 Geometric distance
+ * - Multiple View Geometry in Computer Vision - model selection 4.7.1 RANSAC
+ */
 float Initializer::CheckFundamental(const cv::Mat &F21, vector<bool> &vbMatchesInliers, float sigma)
 {
     const int N = mvMatches12.size();
@@ -422,8 +500,9 @@ float Initializer::CheckFundamental(const cv::Mat &F21, vector<bool> &vbMatchesI
 
     float score = 0;
 
-    const float th = 3.841;
-    const float thScore = 5.991;
+    // 基于卡方检验计算出的阈值（假设测量有一个像素的偏差）
+    const float th = 3.841;       // 一维情况下,选着显著水平: 0.05
+    const float thScore = 5.991;  // 对应 Homography 的得分值
 
     const float invSigmaSquare = 1.0/(sigma*sigma);
 
@@ -441,13 +520,15 @@ float Initializer::CheckFundamental(const cv::Mat &F21, vector<bool> &vbMatchesI
 
         // Reprojection error in second image
         // l2=F21x1=(a2,b2,c2)
-
+        // F21x1可以算出x1在图像中x2对应的线l
         const float a2 = f11*u1+f12*v1+f13;
         const float b2 = f21*u1+f22*v1+f23;
         const float c2 = f31*u1+f32*v1+f33;
 
+        // x2应该在l这条线上:x2点乘l = 0
         const float num2 = a2*u2+b2*v2+c2;
 
+        // 点到线的几何距离 的平方
         const float squareDist1 = num2*num2/(a2*a2+b2*b2);
 
         const float chiSquare1 = squareDist1*invSigmaSquare;
@@ -586,9 +667,40 @@ bool Initializer::ReconstructF(vector<bool> &vbMatchesInliers, cv::Mat &F21, cv:
     return false;
 }
 
+// H矩阵分解常见有两种方法：Faugeras SVD-based decomposition 和 Zhang SVD-based decomposition
+// 参考文献：Motion and structure from motion in a piecewise plannar environment
+// 这篇参考文献和下面的代码使用了Faugeras SVD-based decomposition算法
+/**
+ * The common way of homography matrix decomposition have [Faugeras SVD-based decomposition] and [Zhang SVD-based decomposition]
+ * The following code is used Faugeras SVD-based decomposition function.
+ *
+ * references: Motion and structure from motion in a piecewise plannar environment
+ *   https://www.researchgate.net/publication/243764888_Motion_and_Structure_from_Motion_in_a_Piecewise_Planar_Environment
+ *   https://gitee.com/paopaoslam/ORB-SLAM2/raw/master/ORB-SLAM2%E6%BA%90%E7%A0%81%E8%AF%A6%E8%A7%A3.pdf  Page16~23
+ *   https://blog.csdn.net/kokerf/article/details/72885435
+ *
+ * A = dR + t(n^T)
+ * SVD: A = UΛ(V^T)
+ * where,
+ *     |d1      |
+ * Λ = |   d2   |
+ *     |      d3|
+ *
+ * s = det(U)det(V) s^2 = 1,  U(U^T) = V(V^T) = I
+ * Λ = (sd)(s(U^T)RV) + ((U^T)t)(((V^T)n)^T) ~= d'R' + t'(n'^T)
+ * => R = sUR'(V^T), t = Ut', n = Vn', d = sd'
+ */
+/**
+ * @brief 从H恢复R t
+ *
+ * @see
+ * - Faugeras et al, Motion and structure from motion in a piecewise planar environment. International Journal of Pattern Recognition and Artificial Intelligence, 1988.
+ * - Deeper understanding of the homography decomposition for vision-based control
+ */
 bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv::Mat &K,
                       cv::Mat &R21, cv::Mat &t21, vector<cv::Point3f> &vP3D, vector<bool> &vbTriangulated, float minParallax, int minTriangulated)
 {
+    // 计算内点个数
     int N=0;
     for(size_t i=0, iend = vbMatchesInliers.size() ; i<iend; i++)
         if(vbMatchesInliers[i])
@@ -598,6 +710,7 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
     // Motion and structure from motion in a piecewise planar environment.
     // International Journal of Pattern Recognition and Artificial Intelligence, 1988
 
+    // 因为特征点是图像坐标系, 所以求解R t 时候应该先将 H 矩阵转换到相机坐标系下 参考ppt
     cv::Mat invK = K.inv();
     cv::Mat A = invK*H21*K;
 
@@ -611,6 +724,7 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
     float d2 = w.at<float>(1);
     float d3 = w.at<float>(2);
 
+  // SVD分解的正常情况是特征值降序排列
     if(d1/d2<1.00001 || d2/d3<1.00001)
     {
         return false;
@@ -622,17 +736,35 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
     vn.reserve(8);
 
     //n'=[x1 0 x3] 4 posibilities e1=e3=1, e1=1 e3=-1, e1=-1 e3=1, e1=e3=-1
+    // 法向量n'= [x1 0 x3] 对应ppt的公式17
     float aux1 = sqrt((d1*d1-d2*d2)/(d1*d1-d3*d3));
     float aux3 = sqrt((d2*d2-d3*d3)/(d1*d1-d3*d3));
     float x1[] = {aux1,aux1,-aux1,-aux1};
     float x3[] = {aux3,-aux3,aux3,-aux3};
 
     //case d'=d2
+    // 计算ppt中公式19
     float aux_stheta = sqrt((d1*d1-d2*d2)*(d2*d2-d3*d3))/((d1+d3)*d2);
 
     float ctheta = (d2*d2+d1*d3)/((d1+d3)*d2);
     float stheta[] = {aux_stheta, -aux_stheta, -aux_stheta, aux_stheta};
 
+    // 计算旋转矩阵 R‘，计算ppt中公式18
+    //      | ctheta      0   -aux_stheta|       | aux1|
+    // Rp = |    0        1       0      |  tp = |  0  |
+    //      | aux_stheta  0    ctheta    |       |-aux3|
+
+    //      | ctheta      0    aux_stheta|       | aux1|
+    // Rp = |    0        1       0      |  tp = |  0  |
+    //      |-aux_stheta  0    ctheta    |       | aux3|
+
+    //      | ctheta      0    aux_stheta|       |-aux1|
+    // Rp = |    0        1       0      |  tp = |  0  |
+    //      |-aux_stheta  0    ctheta    |       |-aux3|
+
+    //      | ctheta      0   -aux_stheta|       |-aux1|
+    // Rp = |    0        1       0      |  tp = |  0  |
+    //      | aux_stheta  0    ctheta    |       | aux3|
     for(int i=0; i<4; i++)
     {
         cv::Mat Rp=cv::Mat::eye(3,3,CV_32F);
@@ -650,6 +782,8 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
         tp.at<float>(2)=-x3[i];
         tp*=d1-d3;
 
+        // 这里虽然对t有归一化，并没有决定单目整个SLAM过程的尺度
+        // 因为CreateInitialMapMonocular函数对3D点深度会缩放，然后反过来对 t 有改变
         cv::Mat t = U*tp;
         vt.push_back(t/cv::norm(t));
 
@@ -665,11 +799,13 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
     }
 
     //case d'=-d2
+    // 计算ppt中公式22
     float aux_sphi = sqrt((d1*d1-d2*d2)*(d2*d2-d3*d3))/((d1-d3)*d2);
 
     float cphi = (d1*d3-d2*d2)/((d1-d3)*d2);
     float sphi[] = {aux_sphi, -aux_sphi, -aux_sphi, aux_sphi};
 
+    // 计算旋转矩阵 R‘，计算ppt中公式21
     for(int i=0; i<4; i++)
     {
         cv::Mat Rp=cv::Mat::eye(3,3,CV_32F);
@@ -712,6 +848,7 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
 
     // Instead of applying the visibility constraints proposed in the Faugeras' paper (which could fail for points seen with low parallax)
     // We reconstruct all hypotheses and check in terms of triangulated points and parallax
+    // d'=d2和d'=-d2分别对应8组(R t)
     for(size_t i=0; i<8; i++)
     {
         float parallaxi;
@@ -763,6 +900,10 @@ void Initializer::Triangulate(const cv::KeyPoint &kp1, const cv::KeyPoint &kp2, 
     x3D = x3D.rowRange(0,3)/x3D.at<float>(3);
 }
 
+// 归一化特征点到同一尺度 (作为 normalize DLT(Direct Linear Transform) 的输入)
+//
+// [x' y' 1]' = T * [x y 1]'
+// 归一化后x', y'的均值为0, 一阶绝对矩sum(abs(x_i'-mean_x))=1，sum(abs((y_i'-mean_y))=1
 void Initializer::Normalize(const vector<cv::KeyPoint> &vKeys, vector<cv::Point2f> &vNormalizedPoints, cv::Mat &T)
 {
     float meanX = 0;
@@ -771,6 +912,7 @@ void Initializer::Normalize(const vector<cv::KeyPoint> &vKeys, vector<cv::Point2
 
     vNormalizedPoints.resize(N);
 
+    // 计算 x, y 的均值
     for(int i=0; i<N; i++)
     {
         meanX += vKeys[i].pt.x;
@@ -783,6 +925,7 @@ void Initializer::Normalize(const vector<cv::KeyPoint> &vKeys, vector<cv::Point2
     float meanDevX = 0;
     float meanDevY = 0;
 
+    // 将所有vKeys点减去中心坐标，使x坐标和y坐标均值分别为0
     for(int i=0; i<N; i++)
     {
         vNormalizedPoints[i].x = vKeys[i].pt.x - meanX;
@@ -798,12 +941,16 @@ void Initializer::Normalize(const vector<cv::KeyPoint> &vKeys, vector<cv::Point2
     float sX = 1.0/meanDevX;
     float sY = 1.0/meanDevY;
 
+    // 将x坐标和y坐标分别进行尺度缩放，使得x坐标和y坐标的一阶绝对矩分别为1
     for(int i=0; i<N; i++)
     {
         vNormalizedPoints[i].x = vNormalizedPoints[i].x * sX;
         vNormalizedPoints[i].y = vNormalizedPoints[i].y * sY;
     }
 
+    // |sX  0  -meanx*sX|
+    // |0   sY -meany*sY|
+    // |0   0      1    |
     T = cv::Mat::eye(3,3,CV_32F);
     T.at<float>(0,0) = sX;
     T.at<float>(1,1) = sY;
