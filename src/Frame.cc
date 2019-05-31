@@ -427,7 +427,7 @@ void Frame::UndistortKeyPoints()
     // Undistort points
     // 调整mat的通道为2，矩阵的行列形状不变
     mat=mat.reshape(2);
-    cv::undistortPoints(mat,mat,mK,mDistCoef,cv::Mat(),mK);
+    cv::undistortPoints(mat,mat,mK,mDistCoef,cv::Mat(),mK); // 注意: 这里恢复到无畸变的相机坐标系后又通过 mK 投影回图像坐标中
     mat=mat.reshape(1);
 
     // Fill undistorted keypoint vector

@@ -29,6 +29,7 @@ Map::Map():mnMaxKFid(0),mnBigChangeIdx(0)
 {
 }
 
+// 将关键帧插入地图中
 void Map::AddKeyFrame(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexMap);
