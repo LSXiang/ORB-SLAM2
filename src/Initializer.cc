@@ -565,6 +565,22 @@ float Initializer::CheckFundamental(const cv::Mat &F21, vector<bool> &vbMatchesI
     return score;
 }
 
+//                          |0 -1  0|
+// E = U Sigma V'   let W = |1  0  0|
+//                          |0  0  1|
+// 得到4个解 E = [R|t]
+// R1 = UWV' R2 = UW'V' t1 = U3 t2 = -U3
+/**
+ * @brief 从F恢复R t
+ *
+ * 度量重构
+ * 1. 由Fundamental矩阵结合相机内参K，得到Essential矩阵: \f$ E = k'^T F k \f$
+ * 2. SVD分解得到R t
+ * 3. 进行cheirality check, 从四个解中找出最合适的解
+ *
+ * @see Multiple View Geometry in Computer Vision - Result 9.19 p259
+ * @see An Invitation to 3D Computer Vision - Algorithm 5.1 (The eight-point algorithm) p121
+ */
 bool Initializer::ReconstructF(vector<bool> &vbMatchesInliers, cv::Mat &F21, cv::Mat &K,
                             cv::Mat &R21, cv::Mat &t21, vector<cv::Point3f> &vP3D, vector<bool> &vbTriangulated, float minParallax, int minTriangulated)
 {
@@ -579,6 +595,8 @@ bool Initializer::ReconstructF(vector<bool> &vbMatchesInliers, cv::Mat &F21, cv:
     cv::Mat R1, R2, t;
 
     // Recover the 4 motion hypotheses
+    // 虽然这个函数对t有归一化，但并没有决定单目整个SLAM过程的尺度
+    // 因为CreateInitialMapMonocular函数对3D点深度会缩放，然后反过来对 t 有改变
     DecomposeE(E21,R1,R2,t);  
 
     cv::Mat t1=t;
@@ -599,6 +617,7 @@ bool Initializer::ReconstructF(vector<bool> &vbMatchesInliers, cv::Mat &F21, cv:
     R21 = cv::Mat();
     t21 = cv::Mat();
 
+    // minTriangulated为可以三角化恢复三维点的个数
     int nMinGood = max(static_cast<int>(0.9*N),minTriangulated);
 
     int nsimilar = 0;
@@ -612,12 +631,14 @@ bool Initializer::ReconstructF(vector<bool> &vbMatchesInliers, cv::Mat &F21, cv:
         nsimilar++;
 
     // If there is not a clear winner or not enough triangulated points reject initialization
+    // 四个结果中如果没有明显的最优结果，则返回失败
     if(maxGood<nMinGood || nsimilar>1)
     {
         return false;
     }
 
     // If best reconstruction has enough parallax initialize
+    // 如果最好的重构有足够的视差初始化
     if(maxGood==nGood1)
     {
         if(parallax1>minParallax)
@@ -848,6 +869,8 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
 
     // Instead of applying the visibility constraints proposed in the Faugeras' paper (which could fail for points seen with low parallax)
     // We reconstruct all hypotheses and check in terms of triangulated points and parallax
+    // 对于从 Homography 矩阵分解出来的 8 组 (R, t) 这里并不是根据 Faugeras 的论文中可视化(即,深度值为正)规则来约束筛选,
+    // 作者认为在视差小的情况下可视化约束可能不准确, 因此通过计算每一个空间点云坐标和视差来筛选合适的(R, t)
     // d'=d2和d'=-d2分别对应8组(R t)
     for(size_t i=0; i<8; i++)
     {
@@ -871,7 +894,8 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
         }
     }
 
-
+    // 判断准则: 最优姿态必须比次优姿态恢复空间点数多 1/3 倍; 视差角度必须大于 minParallax=1;
+    //          能够匹配计算的空间点数要多余 minTriangulated=50 且 不少于总点数的 9/10
     if(secondBestGood<0.75*bestGood && bestParallax>=minParallax && bestGood>minTriangulated && bestGood>0.9*N)
     {
         vR[bestSolutionIdx].copyTo(R21);
@@ -885,8 +909,43 @@ bool Initializer::ReconstructH(vector<bool> &vbMatchesInliers, cv::Mat &H21, cv:
     return false;
 }
 
+// Trianularization: 已知匹配特征点对{x x'} 和 各自相机矩阵{P P'}, 估计三维点 X
+// x' = P'X  x = PX
+// 它们都属于 x = aPX模型
+//                         |X|
+// |x|     |p1 p2  p3  p4 ||Y|     |x|    |--p0--||.|
+// |y| = a |p5 p6  p7  p8 ||Z| ===>|y| = a|--p1--||X|
+// |z|     |p9 p10 p11 p12||1|     |z|    |--p2--||.|
+// 采用DLT的方法：x叉乘PX = 0
+// |yp2 -  p1|     |0|
+// |p0 -  xp2| X = |0|
+// |xp1 - yp0|     |0|
+// 两个点:
+// |yp2   -  p1  |     |0|
+// |p0    -  xp2 | X = |0| ===> AX = 0
+// |y'p2' -  p1' |     |0|
+// |p0'   - x'p2'|     |0|
+// 变成程序中的形式：
+// |xp2  - p0 |     |0|
+// |yp2  - p1 | X = |0| ===> AX = 0
+// |x'p2'- p0'|     |0|
+// |y'p2'- p1'|     |0|
+/**
+ * @brief 给定投影矩阵P1,P2和图像上的点kp1,kp2，从而恢复3D坐标
+ *
+ * @param kp1 特征点, in reference frame
+ * @param kp2 特征点, in current frame
+ * @param P1  投影矩阵P1
+ * @param P2  投影矩阵P２
+ * @param x3D 三维点
+ * @see       Multiple View Geometry in Computer Vision - 12.2 Linear triangulation methods p312
+ */
 void Initializer::Triangulate(const cv::KeyPoint &kp1, const cv::KeyPoint &kp2, const cv::Mat &P1, const cv::Mat &P2, cv::Mat &x3D)
 {
+    // 在DecomposeE函数和ReconstructH函数中对t有归一化
+    // 这里三角化过程中恢复的3D点深度取决于 t 的尺度，
+    // 但是这里恢复的3D点并没有决定单目整个SLAM过程的尺度
+    // 因为CreateInitialMapMonocular函数对3D点深度会缩放，然后反过来对 t 有改变
     cv::Mat A(4,4,CV_32F);
 
     A.row(0) = kp1.pt.x*P1.row(2)-P1.row(0);
@@ -976,17 +1035,20 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
     vCosParallax.reserve(vKeys1.size());
 
     // Camera 1 Projection Matrix K[I|0]
+    // 步骤1：得到一个相机的投影矩阵
+    // 以第一个相机的光心作为世界坐标系
     cv::Mat P1(3,4,CV_32F,cv::Scalar(0));
     K.copyTo(P1.rowRange(0,3).colRange(0,3));
-
+    // 第一个相机的光心在世界坐标系下的坐标
     cv::Mat O1 = cv::Mat::zeros(3,1,CV_32F);
 
     // Camera 2 Projection Matrix K[R|t]
+    // 步骤2：得到第二个相机的投影矩阵
     cv::Mat P2(3,4,CV_32F);
     R.copyTo(P2.rowRange(0,3).colRange(0,3));
     t.copyTo(P2.rowRange(0,3).col(3));
     P2 = K*P2;
-
+    // 第二个相机的光心在世界坐标系下的坐标
     cv::Mat O2 = -R.t()*t;
 
     int nGood=0;
@@ -996,10 +1058,12 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
         if(!vbMatchesInliers[i])
             continue;
 
+        // kp1和kp2是匹配特征点
         const cv::KeyPoint &kp1 = vKeys1[vMatches12[i].first];
         const cv::KeyPoint &kp2 = vKeys2[vMatches12[i].second];
         cv::Mat p3dC1;
 
+        // 步骤3：利用三角法恢复三维点p3dC1
         Triangulate(kp1,kp2,P1,P2,p3dC1);
 
         if(!isfinite(p3dC1.at<float>(0)) || !isfinite(p3dC1.at<float>(1)) || !isfinite(p3dC1.at<float>(2)))
@@ -1009,6 +1073,7 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
         }
 
         // Check parallax
+        // 步骤4：计算视差角余弦值
         cv::Mat normal1 = p3dC1 - O1;
         float dist1 = cv::norm(normal1);
 
@@ -1017,17 +1082,24 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
 
         float cosParallax = normal1.dot(normal2)/(dist1*dist2);
 
+        // 步骤5：判断3D点是否在两个摄像头前方
+
         // Check depth in front of first camera (only if enough parallax, as "infinite" points can easily go to negative depth)
+        // 步骤5.1：3D点深度为负，在第一个摄像头后方，淘汰
         if(p3dC1.at<float>(2)<=0 && cosParallax<0.99998)
             continue;
 
         // Check depth in front of second camera (only if enough parallax, as "infinite" points can easily go to negative depth)
+        // 步骤5.2：3D点深度为负，在第二个摄像头后方，淘汰
         cv::Mat p3dC2 = R*p3dC1+t;
 
         if(p3dC2.at<float>(2)<=0 && cosParallax<0.99998)
             continue;
 
+        // 步骤6：计算重投影误差
+
         // Check reprojection error in first image
+        // 计算3D点在第一个图像上的投影误差
         float im1x, im1y;
         float invZ1 = 1.0/p3dC1.at<float>(2);
         im1x = fx*p3dC1.at<float>(0)*invZ1+cx;
@@ -1035,10 +1107,13 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
 
         float squareError1 = (im1x-kp1.pt.x)*(im1x-kp1.pt.x)+(im1y-kp1.pt.y)*(im1y-kp1.pt.y);
 
+        // 步骤6.1：重投影误差太大，跳过淘汰
+        // 一般视差角比较小时重投影误差比较大
         if(squareError1>th2)
             continue;
 
         // Check reprojection error in second image
+        // 计算3D点在第二个图像上的投影误差
         float im2x, im2y;
         float invZ2 = 1.0/p3dC2.at<float>(2);
         im2x = fx*p3dC2.at<float>(0)*invZ2+cx;
@@ -1046,9 +1121,12 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
 
         float squareError2 = (im2x-kp2.pt.x)*(im2x-kp2.pt.x)+(im2y-kp2.pt.y)*(im2y-kp2.pt.y);
 
+        // 步骤6.2：重投影误差太大，跳过淘汰
+        // 一般视差角比较小时重投影误差比较大
         if(squareError2>th2)
             continue;
 
+        // 步骤7：统计经过检验的3D点个数，记录3D点视差角
         vCosParallax.push_back(cosParallax);
         vP3D[vMatches12[i].first] = cv::Point3f(p3dC1.at<float>(0),p3dC1.at<float>(1),p3dC1.at<float>(2));
         nGood++;
@@ -1057,10 +1135,14 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
             vbGood[vMatches12[i].first]=true;
     }
 
+    // 步骤8：得到3D点中较大的视差角
     if(nGood>0)
     {
+        // 从小到大排序
         sort(vCosParallax.begin(),vCosParallax.end());
 
+        // trick! 排序后并没有取最大的视差角
+        // 取一个较大的视差角
         size_t idx = min(50,int(vCosParallax.size()-1));
         parallax = acos(vCosParallax[idx])*180/CV_PI;
     }
@@ -1070,11 +1152,25 @@ int Initializer::CheckRT(const cv::Mat &R, const cv::Mat &t, const vector<cv::Ke
     return nGood;
 }
 
+/**
+ * @brief 分解Essential矩阵
+ *
+ * F矩阵通过结合内参可以得到Essential矩阵，分解E矩阵将得到4组解 \n
+ * 这4组解分别为[R1,t],[R1,-t],[R2,t],[R2,-t]
+ * @param E  Essential Matrix
+ * @param R1 Rotation Matrix 1
+ * @param R2 Rotation Matrix 2
+ * @param t  Translation
+ * @see Multiple View Geometry in Computer Vision - Result 9.19 p259
+ * @see An Invitation to 3D Computer Vision - Algorithm 5.1 (The eight-point algorithm) p121
+ */
 void Initializer::DecomposeE(const cv::Mat &E, cv::Mat &R1, cv::Mat &R2, cv::Mat &t)
 {
     cv::Mat u,w,vt;
     cv::SVD::compute(E,w,u,vt);
 
+    // 对 t 有归一化，但是这个地方并没有决定单目整个SLAM过程的尺度
+    // 因为CreateInitialMapMonocular函数对3D点深度会缩放，然后反过来对 t 有改变
     u.col(2).copyTo(t);
     t=t/cv::norm(t);
 
@@ -1084,7 +1180,7 @@ void Initializer::DecomposeE(const cv::Mat &E, cv::Mat &R1, cv::Mat &R2, cv::Mat
     W.at<float>(2,2)=1;
 
     R1 = u*W*vt;
-    if(cv::determinant(R1)<0)
+    if(cv::determinant(R1)<0) // 旋转矩阵有行列式为1的约束
         R1=-R1;
 
     R2 = u*W.t()*vt;
