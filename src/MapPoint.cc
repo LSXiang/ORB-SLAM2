@@ -52,6 +52,15 @@ MapPoint::MapPoint(const cv::Mat &Pos, KeyFrame *pRefKF, Map* pMap):
     mnId=nNextId++;
 }
 
+/**
+ * @brief 给定坐标与frame构造MapPoint
+ *
+ * 双目：UpdateLastFrame()
+ * @param Pos    MapPoint的坐标（wrt世界坐标系）
+ * @param pMap   Map
+ * @param pFrame Frame
+ * @param idxF   MapPoint在Frame中的索引，即对应的特征点的编号
+ */
 MapPoint::MapPoint(const cv::Mat &Pos, Map* pMap, Frame* pFrame, const int &idxF):
     mnFirstKFid(-1), mnFirstFrame(pFrame->mnId), nObs(0), mnTrackReferenceForFrame(0), mnLastFrameSeen(0),
     mnBALocalForKF(0), mnFuseCandidateForKF(0),mnLoopPointForKF(0), mnCorrectedByKF(0),
@@ -60,8 +69,8 @@ MapPoint::MapPoint(const cv::Mat &Pos, Map* pMap, Frame* pFrame, const int &idxF
 {
     Pos.copyTo(mWorldPos);
     cv::Mat Ow = pFrame->GetCameraCenter();
-    mNormalVector = mWorldPos - Ow;
-    mNormalVector = mNormalVector/cv::norm(mNormalVector);
+    mNormalVector = mWorldPos - Ow; // 世界坐标系下相机到3D点的向量
+    mNormalVector = mNormalVector/cv::norm(mNormalVector);  // 世界坐标系下相机到 3D 点的单位向量
 
     cv::Mat PC = Pos - Ow;
     const float dist = cv::norm(PC);
@@ -69,9 +78,11 @@ MapPoint::MapPoint(const cv::Mat &Pos, Map* pMap, Frame* pFrame, const int &idxF
     const float levelScaleFactor =  pFrame->mvScaleFactors[level];
     const int nLevels = pFrame->mnScaleLevels;
 
+    // 另见PredictScale函数前的注释
     mfMaxDistance = dist*levelScaleFactor;
     mfMinDistance = mfMaxDistance/pFrame->mvScaleFactors[nLevels-1];
 
+    // 见mDescriptor在MapPoint.h中的注释
     pFrame->mDescriptors.row(idxF).copyTo(mDescriptor);
 
     // MapPoints can be created from Tracking and Local Mapping. This mutex avoid conflicts with id.
@@ -375,9 +386,9 @@ void MapPoint::UpdateNormalAndDepth()
         unique_lock<mutex> lock2(mMutexPos);
         if(mbBad)
             return;
-        observations=mObservations;
-        pRefKF=mpRefKF;
-        Pos = mWorldPos.clone();
+        observations=mObservations;   // 获得观测到该3d点的所有关键帧
+        pRefKF=mpRefKF;               // 观测到该点的参考关键帧
+        Pos = mWorldPos.clone();      // 3d点在世界坐标系中的位置
     }
 
     if(observations.empty())
@@ -390,21 +401,22 @@ void MapPoint::UpdateNormalAndDepth()
         KeyFrame* pKF = mit->first;
         cv::Mat Owi = pKF->GetCameraCenter();
         cv::Mat normali = mWorldPos - Owi;
-        normal = normal + normali/cv::norm(normali);
+        normal = normal + normali/cv::norm(normali);  // 对所有关键帧对该点的观测方向归一化为单位向量进行求和
         n++;
     }
 
-    cv::Mat PC = Pos - pRefKF->GetCameraCenter();
-    const float dist = cv::norm(PC);
+    cv::Mat PC = Pos - pRefKF->GetCameraCenter();     // 参考关键帧相机指向3D点的向量（在世界坐标系下的表示）
+    const float dist = cv::norm(PC);                  // 该点到参考关键帧相机的距离
     const int level = pRefKF->mvKeysUn[observations[pRefKF]].octave;
     const float levelScaleFactor =  pRefKF->mvScaleFactors[level];
-    const int nLevels = pRefKF->mnScaleLevels;
+    const int nLevels = pRefKF->mnScaleLevels;  // 金字塔层数
 
     {
         unique_lock<mutex> lock3(mMutexPos);
-        mfMaxDistance = dist*levelScaleFactor;
-        mfMinDistance = mfMaxDistance/pRefKF->mvScaleFactors[nLevels-1];
-        mNormalVector = normal/n;
+        // 另见PredictScale函数前的注释
+        mfMaxDistance = dist*levelScaleFactor;                            // 观测到该点的距离下限
+        mfMinDistance = mfMaxDistance/pRefKF->mvScaleFactors[nLevels-1];  // 观测到该点的距离上限
+        mNormalVector = normal/n;                                         // 获得平均的观测方向
     }
 }
 
@@ -420,6 +432,16 @@ float MapPoint::GetMaxDistanceInvariance()
     return 1.2f*mfMaxDistance;
 }
 
+//              ____
+// Nearer      /____\     level:n-1 --> dmin
+//            /______\                       d/dmin = 1.2^(n-1-m)
+//           /________\   level:m   --> d
+//          /__________\                     dmax/d = 1.2^m
+// Farther /____________\ level:0   --> dmax
+//
+//           log(dmax/d)
+// m = ceil(------------)
+//            log(1.2)
 int MapPoint::PredictScale(const float &currentDist, KeyFrame* pKF)
 {
     float ratio;

@@ -97,8 +97,8 @@ protected:
 
     void ComputeThreeMaxima(std::vector<int>* histo, const int L, int &ind1, int &ind2, int &ind3);
 
-    float mfNNratio;
-    bool mbCheckOrientation;
+    float mfNNratio;          // 最优与次优的比率需要满足值
+    bool mbCheckOrientation;  // 是否检测 ORB 特征点的方向
 };
 
 }// namespace ORB_SLAM

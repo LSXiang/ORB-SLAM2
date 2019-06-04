@@ -37,7 +37,10 @@
 namespace ORB_SLAM2
 {
 
-
+// pMap中所有的 MapPoints 和关键帧做 bundle adjustment 优化
+// 这个全局 BA 优化在本程序中有两个地方使用：
+// a.单目初始化：CreateInitialMapMonocular函数
+// b.闭环优化：RunGlobalBundleAdjustment函数
 void Optimizer::GlobalBundleAdjustemnt(Map* pMap, int nIterations, bool* pbStopFlag, const unsigned long nLoopKF, const bool bRobust)
 {
     vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -45,13 +48,34 @@ void Optimizer::GlobalBundleAdjustemnt(Map* pMap, int nIterations, bool* pbStopF
     BundleAdjustment(vpKFs,vpMP,nIterations,pbStopFlag, nLoopKF, bRobust);
 }
 
-
+/**
+ * @brief bundle adjustment Optimization
+ *
+ * 3D-2D 最小化重投影误差 e = (u,v) - project(Tcw*Pw)
+ *
+ * 1. Vertex: g2o::VertexSE3Expmap()，即当前帧的Tcw
+ *            g2o::VertexSBAPointXYZ()，MapPoint的mWorldPos
+ * 2. Edge:
+ *     - g2o::EdgeSE3ProjectXYZ() , BaseBinaryEdge
+ *         + Vertex：待优化当前帧的Tcw
+ *         + Vertex：待优化MapPoint的mWorldPos
+ *         + measurement：MapPoint在当前帧中的二维位置(u,v)
+ *         + InfoMatrix: invSigma2(与特征点所在的尺度有关)
+ *
+ * @param   vpKFs    关键帧
+ *          vpMP     MapPoints
+ *          nIterations 迭代次数（5次）
+ *          pbStopFlag  是否强制暂停
+ *          nLoopKF  关键帧的个数
+ *          bRobust  是否使用核函数
+ */
 void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<MapPoint *> &vpMP,
                                  int nIterations, bool* pbStopFlag, const unsigned long nLoopKF, const bool bRobust)
 {
     vector<bool> vbNotIncludedMP;
     vbNotIncludedMP.resize(vpMP.size());
 
+    // 步骤1：初始化g2o优化器
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
 
@@ -67,7 +91,10 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
     long unsigned int maxKFid = 0;
 
+    // 步骤2：向优化器添加顶点
+
     // Set KeyFrame vertices
+    // 步骤2.1：向优化器添加关键帧位姿顶点
     for(size_t i=0; i<vpKFs.size(); i++)
     {
         KeyFrame* pKF = vpKFs[i];
@@ -76,16 +103,18 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         vSE3->setEstimate(Converter::toSE3Quat(pKF->GetPose()));
         vSE3->setId(pKF->mnId);
-        vSE3->setFixed(pKF->mnId==0);
+        vSE3->setFixed(pKF->mnId==0); // 起始姿态应该是被固定的的
         optimizer.addVertex(vSE3);
         if(pKF->mnId>maxKFid)
             maxKFid=pKF->mnId;
     }
 
+    // 卡方分布中 二维和三维 的 X^2~0.05(2) = 5.99 和 X^2~0.05(3) = 7.815
     const float thHuber2D = sqrt(5.99);
     const float thHuber3D = sqrt(7.815);
 
     // Set MapPoint vertices
+    // 步骤2.2：向优化器添加MapPoints顶点
     for(size_t i=0; i<vpMP.size(); i++)
     {
         MapPoint* pMP = vpMP[i];
@@ -102,6 +131,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
         int nEdges = 0;
         //SET EDGES
+        // 步骤3：向优化器添加投影边边
         for(map<KeyFrame*,size_t>::const_iterator mit=observations.begin(); mit!=observations.end(); mit++)
         {
 
@@ -113,6 +143,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
             const cv::KeyPoint &kpUn = pKF->mvKeysUn[mit->second];
 
+            // 单目或 RGBD 相机
             if(pKF->mvuRight[mit->second]<0)
             {
                 Eigen::Matrix<double,2,1> obs;
@@ -140,7 +171,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
                 optimizer.addEdge(e);
             }
-            else
+            else  // 双目相机
             {
                 Eigen::Matrix<double,3,1> obs;
                 const float kp_ur = pKF->mvuRight[mit->second];
@@ -184,10 +215,12 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
     }
 
     // Optimize!
+    // 步骤4：开始优化
     optimizer.initializeOptimization();
     optimizer.optimize(nIterations);
 
     // Recover optimized data
+    // 步骤5：得到优化的结果并更新
 
     //Keyframes
     for(size_t i=0; i<vpKFs.size(); i++)
@@ -236,8 +269,31 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
 }
 
+/**
+ * @brief Pose Only Optimization
+ *
+ * 3D-2D 最小化重投影误差 e = (u,v) - project(Tcw*Pw) \n
+ * 只优化Frame的Tcw，不优化MapPoints的坐标
+ *
+ * 1. Vertex: g2o::VertexSE3Expmap()，即当前帧的Tcw
+ * 2. Edge:
+ *     - g2o::EdgeSE3ProjectXYZOnlyPose()，BaseUnaryEdge
+ *         + Vertex：待优化当前帧的Tcw
+ *         + measurement：MapPoint在当前帧中的二维位置(u,v)
+ *         + InfoMatrix: invSigma2(与特征点所在的尺度有关)
+ *     - g2o::EdgeStereoSE3ProjectXYZOnlyPose()，BaseUnaryEdge
+ *         + Vertex：待优化当前帧的Tcw
+ *         + measurement：MapPoint在当前帧中的二维位置(ul,v,ur)
+ *         + InfoMatrix: invSigma2(与特征点所在的尺度有关)
+ *
+ * @param   pFrame Frame
+ * @return  inliers数量
+ */
 int Optimizer::PoseOptimization(Frame *pFrame)
 {
+    // 该优化函数主要用于Tracking线程中：运动跟踪、参考帧跟踪、地图跟踪、重定位
+
+    // 步骤1: 构建 G2O 优化器
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
 
@@ -251,6 +307,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     int nInitialCorrespondences=0;
 
     // Set Frame vertex
+    // 步骤2: 添加顶点: 待优化当前帧的 Tcw
     g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
     vSE3->setEstimate(Converter::toSE3Quat(pFrame->mTcw));
     vSE3->setId(0);
@@ -260,20 +317,23 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     // Set MapPoint vertices
     const int N = pFrame->N;
 
+    // 针对于单目
     vector<g2o::EdgeSE3ProjectXYZOnlyPose*> vpEdgesMono;
     vector<size_t> vnIndexEdgeMono;
     vpEdgesMono.reserve(N);
     vnIndexEdgeMono.reserve(N);
 
+    // 针对于双目
     vector<g2o::EdgeStereoSE3ProjectXYZOnlyPose*> vpEdgesStereo;
     vector<size_t> vnIndexEdgeStereo;
     vpEdgesStereo.reserve(N);
     vnIndexEdgeStereo.reserve(N);
 
+    // 0.05 的卡方分布二维和三维 delta 值
     const float deltaMono = sqrt(5.991);
     const float deltaStereo = sqrt(7.815);
 
-
+    // 步骤3: 添加一元边: 相机投影模型
     {
     unique_lock<mutex> lock(MapPoint::mGlobalMutex);
 
@@ -283,6 +343,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
         if(pMP)
         {
             // Monocular observation
+            // 单目情况下, 也有可能在双目情况下, 当前帧的左兴趣点找不到匹配的右兴趣点
             if(pFrame->mvuRight[i]<0)
             {
                 nInitialCorrespondences++;
@@ -301,7 +362,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
                 g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                 e->setRobustKernel(rk);
-                rk->setDelta(deltaMono);
+                rk->setDelta(deltaMono);  // 单目的 delta
 
                 e->fx = pFrame->fx;
                 e->fy = pFrame->fy;
@@ -323,10 +384,10 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                 pFrame->mvbOutlier[i] = false;
 
                 //SET EDGE
-                Eigen::Matrix<double,3,1> obs;
+                Eigen::Matrix<double,3,1> obs;  // 这里和单目不同, 三维, 因此鲁棒函数设置值为三维的卡方 0.05 对应的 delta
                 const cv::KeyPoint &kpUn = pFrame->mvKeysUn[i];
                 const float &kp_ur = pFrame->mvuRight[i];
-                obs << kpUn.pt.x, kpUn.pt.y, kp_ur;
+                obs << kpUn.pt.x, kpUn.pt.y, kp_ur; // 这里和单目不同, 多了兴趣点在右目中的列坐标
 
                 g2o::EdgeStereoSE3ProjectXYZOnlyPose* e = new g2o::EdgeStereoSE3ProjectXYZOnlyPose();
 
@@ -338,7 +399,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
                 g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                 e->setRobustKernel(rk);
-                rk->setDelta(deltaStereo);
+                rk->setDelta(deltaStereo);  // 双目的 delta
 
                 e->fx = pFrame->fx;
                 e->fy = pFrame->fy;
@@ -366,6 +427,9 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
     // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
+    // 步骤4：开始优化，总共优化四次，每次优化后，将观测分为outlier和inlier，outlier不参与下次优化
+    // 由于每次优化后是对所有的观测进行outlier和inlier判别，因此之前被判别为outlier有可能变成inlier，反之亦然
+    // 基于卡方检验计算出的阈值（假设测量有一个像素的偏差）
     const float chi2Mono[4]={5.991,5.991,5.991,5.991};
     const float chi2Stereo[4]={7.815,7.815,7.815, 7.815};
     const int its[4]={10,10,10,10};    
@@ -375,10 +439,11 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     {
 
         vSE3->setEstimate(Converter::toSE3Quat(pFrame->mTcw));
-        optimizer.initializeOptimization(0);
-        optimizer.optimize(its[it]);
+        optimizer.initializeOptimization(0); // 对level为0的边进行优化
+        optimizer.optimize(its[it]);  // 四次迭代，每次迭代的次数
 
         nBad=0;
+        // 单目
         for(size_t i=0, iend=vpEdgesMono.size(); i<iend; i++)
         {
             g2o::EdgeSE3ProjectXYZOnlyPose* e = vpEdgesMono[i];
@@ -387,7 +452,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
             if(pFrame->mvbOutlier[idx])
             {
-                e->computeError();
+                e->computeError();  //! NOTE g2o只会计算 active edge 的误差, 因此先前判定为 outlier 的点需要重新计算误差
             }
 
             const float chi2 = e->chi2();
@@ -395,19 +460,20 @@ int Optimizer::PoseOptimization(Frame *pFrame)
             if(chi2>chi2Mono[it])
             {                
                 pFrame->mvbOutlier[idx]=true;
-                e->setLevel(1);
+                e->setLevel(1);   // 设置为outlier
                 nBad++;
             }
             else
             {
                 pFrame->mvbOutlier[idx]=false;
-                e->setLevel(0);
+                e->setLevel(0);   // 设置为inlier
             }
 
             if(it==2)
-                e->setRobustKernel(0);
+                e->setRobustKernel(0);  // 除了前两次优化需要 RobustKernel 以外, 其余的优化都不需要
         }
 
+        // 双目
         for(size_t i=0, iend=vpEdgesStereo.size(); i<iend; i++)
         {
             g2o::EdgeStereoSE3ProjectXYZOnlyPose* e = vpEdgesStereo[i];

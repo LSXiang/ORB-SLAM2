@@ -396,7 +396,12 @@ bool Frame::PosInGrid(const cv::KeyPoint &kp, int &posX, int &posY)
     return true;
 }
 
-
+/**
+ * @brief Bag of Words Representation
+ *
+ * 计算词包mBowVec和mFeatVec，其中mFeatVec记录了属于第i个node（在第4层）的ni个描述子
+ * @see CreateInitialMapMonocular() TrackReferenceKeyFrame() Relocalization()
+ */
 void Frame::ComputeBoW()
 {
     if(mBowVec.empty())
@@ -672,8 +677,17 @@ void Frame::ComputeStereoFromRGBD(const cv::Mat &imDepth)
     }
 }
 
+/**
+ * @brief Backprojects a keypoint (if stereo/depth info available) into 3D world coordinates.
+ * @param  i 第i个keypoint
+ * @return   3D点（相对于世界坐标系）
+ */
 cv::Mat Frame::UnprojectStereo(const int &i)
 {
+    // mvDepth是在ComputeStereoMatches函数中求取的
+    // mvDepth对应的校正前的特征点，可这里却是对校正后特征点反投影
+    // KeyFrame::UnprojectStereo中是对校正前的特征点mvKeys反投影
+    // 在ComputeStereoMatches函数中应该对校正后的特征点求深度？？ (wubo??)
     const float z = mvDepth[i];
     if(z>0)
     {

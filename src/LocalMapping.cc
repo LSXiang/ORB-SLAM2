@@ -111,6 +111,13 @@ void LocalMapping::Run()
     SetFinish();
 }
 
+/**
+ * @brief 插入关键帧
+ *
+ * 将关键帧插入到地图中，以便将来进行局部地图优化
+ * 这里仅仅是将关键帧插入到列表中进行等待
+ * @param pKF KeyFrame
+ */
 void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexNewKFs);

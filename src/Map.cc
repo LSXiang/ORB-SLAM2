@@ -38,6 +38,10 @@ void Map::AddKeyFrame(KeyFrame *pKF)
         mnMaxKFid=pKF->mnId;
 }
 
+/**
+ * @brief Insert MapPoint in the map 将空间点插入到地图中
+ * @param pMP MapPoint
+ */
 void Map::AddMapPoint(MapPoint *pMP)
 {
     unique_lock<mutex> lock(mMutexMap);
