@@ -365,6 +365,7 @@ void Tracking::Track()
             }
             else
             {
+                // BOW搜索，PnP求解位姿
                 bOK = Relocalization();
             }
         }
@@ -440,9 +441,14 @@ void Tracking::Track()
             }
         }
 
+        // 将最新的关键帧作为 reference frame
         mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
         // If we have an initial estimation of the camera pose and matching. Track the local map.
+        // 步骤2.2: 在帧间匹配得到初始的姿态后, 现在对 local map 进行跟踪得到更多的匹配, 并优化当前位姿
+        // local map: 当前帧、当前帧的 MapPoint、当前关键帧与其他关键件共视关系
+        // 在步骤 2.1 中主要是两两跟踪 (恒速模型跟踪上一帧/参考帧) , 这里搜索局部关键帧后搜集所有局部 MapPoints,
+        // 然后将局部 MapPoints 和当前帧进行投影匹配, 得到更多匹配的 MapPoints 后进行 pose 优化
         if(!mbOnlyTracking)
         {
             if(bOK)
@@ -1028,6 +1034,7 @@ bool Tracking::TrackWithMotionModel()
     // 这个函数的功能就是补充添加双目和RGBD相机上一帧的 MapPoint 数
     UpdateLastFrame();
 
+    // 根据 const Velocity Model (认为当前两帧之间的相对运动和之前两帧之间相对运动相同)估计当前帧的位姿
     mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
 
     fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
@@ -1038,9 +1045,13 @@ bool Tracking::TrackWithMotionModel()
         th=15;
     else
         th=7;
+
+    // 步骤2: 根据匀速度模型进行对上一帧的 MapPoints 进行跟踪
+    // 根据上一帧特征点对应的 3D 点投影的位姿缩小特征点匹配范围
     int nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,th,mSensor==System::MONOCULAR);
 
     // If few matches, uses a wider window search
+    // 如果跟踪的点少，则扩大搜索半径再来一次
     if(nmatches<20)
     {
         fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
@@ -1051,9 +1062,11 @@ bool Tracking::TrackWithMotionModel()
         return false;
 
     // Optimize frame pose with all matches
+    // 步骤3: 优化位姿
     Optimizer::PoseOptimization(&mCurrentFrame);
 
     // Discard outliers
+    // 步骤4: 优化位姿后剔除 outlier 的 mvpMapPoints
     int nmatchesMap = 0;
     for(int i =0; i<mCurrentFrame.N; i++)
     {
@@ -1497,10 +1510,12 @@ void Tracking::UpdateLocalKeyFrames()
 bool Tracking::Relocalization()
 {
     // Compute Bag of Words Vector
+    // 步骤1: 计算当前帧特征点的 BoW 映射
     mCurrentFrame.ComputeBoW();
 
     // Relocalization is performed when tracking is lost
     // Track Lost: Query KeyFrame Database for keyframe candidates for relocalisation
+    // 步骤2：找到与当前帧相似的候选关键帧
     vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectRelocalizationCandidates(&mCurrentFrame);
 
     if(vpCandidateKFs.empty())

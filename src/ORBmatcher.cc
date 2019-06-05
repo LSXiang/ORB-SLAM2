@@ -1373,6 +1373,19 @@ int ORBmatcher::SearchBySim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint*> &
     return nFound;
 }
 
+/**
+ * @brief 通过投影，对上一帧的特征点进行跟踪
+ *
+ * 上一帧中包含了MapPoints，对这些MapPoints进行tracking，由此增加当前帧的MapPoints \n
+ * 1. 将上一帧的MapPoints投影到当前帧(根据速度模型可以估计当前帧的Tcw)
+ * 2. 在投影点附近根据描述子距离选取匹配，以及最终的方向投票机制进行剔除
+ * @param  CurrentFrame 当前帧
+ * @param  LastFrame    上一帧
+ * @param  th           阈值
+ * @param  bMono        是否为单目
+ * @return              成功匹配的数量
+ * @see SearchByBoW()
+ */
 int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, const float th, const bool bMono)
 {
     int nmatches = 0;
@@ -1386,15 +1399,19 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
     const cv::Mat Rcw = CurrentFrame.mTcw.rowRange(0,3).colRange(0,3);
     const cv::Mat tcw = CurrentFrame.mTcw.rowRange(0,3).col(3);
 
-    const cv::Mat twc = -Rcw.t()*tcw;
+    const cv::Mat twc = -Rcw.t()*tcw; // twc 基于世界坐标: 从世界坐标系原点指向当前帧相机光心的向量
 
     const cv::Mat Rlw = LastFrame.mTcw.rowRange(0,3).colRange(0,3);
-    const cv::Mat tlw = LastFrame.mTcw.rowRange(0,3).col(3);
+    const cv::Mat tlw = LastFrame.mTcw.rowRange(0,3).col(3);  // tlw 基于前一帧相机坐标: 从前一帧相机光心指向世界坐标系原点向量
 
+    // vector from LastFrame to CurrentFrame expressed in LastFrame
+    // t'wc = Rlw*twc 基于前一帧相机坐标系: 从世界坐标系原点指向当前帧相机光心的向量
+    // tlc = t'wc +　tlw 基于前一帧相机坐标系: 从前一帧相机光心指向当前相机光心的向量 (通过画图易得)
     const cv::Mat tlc = Rlw*twc+tlw;
 
-    const bool bForward = tlc.at<float>(2)>CurrentFrame.mb && !bMono;
-    const bool bBackward = -tlc.at<float>(2)>CurrentFrame.mb && !bMono;
+    // 判断前进还是后退
+    const bool bForward = tlc.at<float>(2)>CurrentFrame.mb && !bMono;   // 非单目情况, 如果 Z > 基线, 则表示前进
+    const bool bBackward = -tlc.at<float>(2)>CurrentFrame.mb && !bMono; // 非单目情况, 如果 Z < 基线, 则表示后退
 
     for(int i=0; i<LastFrame.N; i++)
     {
@@ -1404,6 +1421,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
         {
             if(!LastFrame.mvbOutlier[i])
             {
+                // 对上一帧有效的 MapPoint 进行跟踪
                 // Project
                 cv::Mat x3Dw = pMP->GetWorldPos();
                 cv::Mat x3Dc = Rcw*x3Dw+tcw;
@@ -1426,13 +1444,17 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
                 int nLastOctave = LastFrame.mvKeys[i].octave;
 
                 // Search in a window. Size depends on scale
-                float radius = th*CurrentFrame.mvScaleFactors[nLastOctave];
+                float radius = th*CurrentFrame.mvScaleFactors[nLastOctave]; // 尺度越大，搜索范围越大
 
                 vector<size_t> vIndices2;
 
-                if(bForward)
+                //! @NOTE: 尺度越大,图像越小
+                // 以下可以这么理解, 例如一个有一定面积的圆点, 在某一尺度 n 下它是一个特征点
+                // 当前进时, 圆点的面积增大. 在某个尺度 m 下它是一个特征点, 由于面积增大, 则需要更高的尺度才能检测出来
+                // 因此 m >= n , 对应前进情况, nCurOctave >= nLastOctave . 后退的情况可以类推.
+                if(bForward)  // 前进,则上一帧兴趣点在所在的尺度nLastOctave<=nCurOctave
                     vIndices2 = CurrentFrame.GetFeaturesInArea(u,v, radius, nLastOctave);
-                else if(bBackward)
+                else if(bBackward)  // 后退,则上一帧兴趣点在所在的尺度0<=nCurOctave<=nLastOctave
                     vIndices2 = CurrentFrame.GetFeaturesInArea(u,v, radius, 0, nLastOctave);
                 else
                     vIndices2 = CurrentFrame.GetFeaturesInArea(u,v, radius, nLastOctave-1, nLastOctave+1);
@@ -1445,8 +1467,10 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
                 int bestDist = 256;
                 int bestIdx2 = -1;
 
+                // 遍历满足条件的特征点
                 for(vector<size_t>::const_iterator vit=vIndices2.begin(), vend=vIndices2.end(); vit!=vend; vit++)
                 {
+                    // 如果该特征点已经有对应的 MapPoint 了, 则退出该次循环
                     const size_t i2 = *vit;
                     if(CurrentFrame.mvpMapPoints[i2])
                         if(CurrentFrame.mvpMapPoints[i2]->Observations()>0)
@@ -1454,6 +1478,7 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
 
                     if(CurrentFrame.mvuRight[i2]>0)
                     {
+                        // 双目的情况，需要保证右图的点也在搜索半径以内
                         const float ur = u - CurrentFrame.mbf*invzc;
                         const float er = fabs(ur - CurrentFrame.mvuRight[i2]);
                         if(er>radius)
@@ -1473,9 +1498,10 @@ int ORBmatcher::SearchByProjection(Frame &CurrentFrame, const Frame &LastFrame, 
 
                 if(bestDist<=TH_HIGH)
                 {
-                    CurrentFrame.mvpMapPoints[bestIdx2]=pMP;
+                    CurrentFrame.mvpMapPoints[bestIdx2]=pMP;  // 为当前帧添加 MapPoint
                     nmatches++;
 
+                    // 统计旋转方向直方图, 然后下面根据旋转方向剔除误匹配的点
                     if(mbCheckOrientation)
                     {
                         float rot = LastFrame.mvKeysUn[i].angle-CurrentFrame.mvKeysUn[bestIdx2].angle;

@@ -155,6 +155,10 @@ protected:
     LoopClosing* mpLoopClosing;
 
     //ORB
+    // orb特征提取器，不管单目还是双目，mpORBextractorLeft都要用到
+    // 如果是双目，则要用到mpORBextractorRight
+    // 如果是单目，在初始化的时候使用mpIniORBextractor而不是mpORBextractorLeft，
+    // mpIniORBextractor属性中提取的特征点个数是mpORBextractorLeft的两倍
     ORBextractor* mpORBextractorLeft, *mpORBextractorRight;
     ORBextractor* mpIniORBextractor;
 
@@ -208,7 +212,7 @@ protected:
     unsigned int mnLastRelocFrameId;
 
     //Motion Model
-    cv::Mat mVelocity;
+    cv::Mat mVelocity;  // 当前帧与前一帧的变换矩阵 T_current_reference 用于下一帧作为参考变换速度模型
 
     //Color order (true RGB, false BGR, ignored if grayscale)
     bool mbRGB;
