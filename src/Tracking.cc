@@ -1545,6 +1545,7 @@ bool Tracking::Relocalization()
             vbDiscarded[i] = true;
         else
         {
+            // 步骤3：通过BoW进行匹配
             int nmatches = matcher.SearchByBoW(pKF,mCurrentFrame,vvpMapPointMatches[i]);
             if(nmatches<15)
             {
@@ -1553,6 +1554,7 @@ bool Tracking::Relocalization()
             }
             else
             {
+                // 初始化 PnPsolver
                 PnPsolver* pSolver = new PnPsolver(mCurrentFrame,vvpMapPointMatches[i]);
                 pSolver->SetRansacParameters(0.99,10,300,4,0.5,5.991);
                 vpPnPsolvers[i] = pSolver;
@@ -1563,6 +1565,7 @@ bool Tracking::Relocalization()
 
     // Alternatively perform some iterations of P4P RANSAC
     // Until we found a camera pose supported by enough inliers
+    // 利用 RANSAC 选择性的执行 P4P 算法迭代直到相机姿势计算过程拥有足够多的 inliers 点
     bool bMatch = false;
     ORBmatcher matcher2(0.9,true);
 
@@ -1578,6 +1581,7 @@ bool Tracking::Relocalization()
             int nInliers;
             bool bNoMore;
 
+            // 步骤4: 通过 EPnP 算法估计位姿
             PnPsolver* pSolver = vpPnPsolvers[i];
             cv::Mat Tcw = pSolver->iterate(5,bNoMore,vbInliers,nInliers);
 

@@ -198,6 +198,13 @@ vector<KeyFrame*> KeyFrame::GetVectorCovisibleKeyFrames()
     return mvpOrderedConnectedKeyFrames;
 }
 
+/**
+ * @brief 得到与该关键帧连接的前N个关键帧(已按权值排序)
+ *
+ * 如果连接的关键帧少于N，则返回所有连接的关键帧
+ * @param N 前N个
+ * @return 连接的关键帧
+ */
 vector<KeyFrame*> KeyFrame::GetBestCovisibilityKeyFrames(const int &N)
 {
     unique_lock<mutex> lock(mMutexConnections);

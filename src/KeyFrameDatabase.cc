@@ -277,22 +277,26 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F)
     float bestAccScore = 0;
 
     // Lets now accumulate score by covisibility
+    // 步骤4: 计算获选帧组得分. 得到最高组得分 bestAccScore, 并以此决定阈值 minScoreToRetain
+    // 单单计算当前帧和某一关键帧的相似性是不够的, 这里将与关键帧相连(权值最高,共视程度最高)的前10个关键帧归为一组,计算累计得分
+    // 具体而言: lScoreAndMatch中每一个KeyFrame都把与自己共视程度较高的帧归为一组，
+    //          每一组会计算组得分并记录该组分数最高的KeyFrame，记录于lAccScoreAndMatch
     for(list<pair<float,KeyFrame*> >::iterator it=lScoreAndMatch.begin(), itend=lScoreAndMatch.end(); it!=itend; it++)
     {
         KeyFrame* pKFi = it->second;
         vector<KeyFrame*> vpNeighs = pKFi->GetBestCovisibilityKeyFrames(10);
 
-        float bestScore = it->first;
-        float accScore = bestScore;
-        KeyFrame* pBestKF = pKFi;
+        float bestScore = it->first;  // 该组最高分数
+        float accScore = bestScore;   // 该组累计分
+        KeyFrame* pBestKF = pKFi;     // 该组最高分数对应帧
         for(vector<KeyFrame*>::iterator vit=vpNeighs.begin(), vend=vpNeighs.end(); vit!=vend; vit++)
         {
             KeyFrame* pKF2 = *vit;
             if(pKF2->mnRelocQuery!=F->mnId)
                 continue;
 
-            accScore+=pKF2->mRelocScore;
-            if(pKF2->mRelocScore>bestScore)
+            accScore+=pKF2->mRelocScore;    // 只有pKF2也在闭环候选帧中，才能贡献分数
+            if(pKF2->mRelocScore>bestScore) // 统计得到组里分数最高的 KeyFrame
             {
                 pBestKF=pKF2;
                 bestScore = pKF2->mRelocScore;
@@ -300,11 +304,12 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F)
 
         }
         lAccScoreAndMatch.push_back(make_pair(accScore,pBestKF));
-        if(accScore>bestAccScore)
-            bestAccScore=accScore;
+        if(accScore>bestAccScore)   // 记录所有组中组得分最高的组
+            bestAccScore=accScore;  // 得到所有组中最高的累计得分
     }
 
     // Return all those keyframes with a score higher than 0.75*bestScore
+    // 步骤5: 得到组得分大于阈值的, 组内得分最高的关键帧
     float minScoreToRetain = 0.75f*bestAccScore;
     set<KeyFrame*> spAlreadyAddedKF;
     vector<KeyFrame*> vpRelocCandidates;
@@ -312,10 +317,11 @@ vector<KeyFrame*> KeyFrameDatabase::DetectRelocalizationCandidates(Frame *F)
     for(list<pair<float,KeyFrame*> >::iterator it=lAccScoreAndMatch.begin(), itend=lAccScoreAndMatch.end(); it!=itend; it++)
     {
         const float &si = it->first;
+        // 只返回累计得分大于minScoreToRetain的组中分数最高的关键帧 0.75*bestScore
         if(si>minScoreToRetain)
         {
             KeyFrame* pKFi = it->second;
-            if(!spAlreadyAddedKF.count(pKFi))
+            if(!spAlreadyAddedKF.count(pKFi)) // 判断该pKFi是否已经在队列中了
             {
                 vpRelocCandidates.push_back(pKFi);
                 spAlreadyAddedKF.insert(pKFi);
