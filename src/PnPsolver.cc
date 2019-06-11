@@ -247,7 +247,7 @@ cv::Mat PnPsolver::iterate(int nIterations, bool &bNoMore, vector<bool> &vbInlie
         // Compute camera pose, 计算相机位姿
         compute_pose(mRi, mti);
 
-        // Check inliers
+        // Check inliers, 计算内点个数,并标记序号
         CheckInliers();
 
         if(mnInliersi>=mRansacMinInliers)
@@ -267,7 +267,7 @@ cv::Mat PnPsolver::iterate(int nIterations, bool &bNoMore, vector<bool> &vbInlie
                 tcw.copyTo(mBestTcw.rowRange(0,3).col(3));
             }
 
-            if(Refine())
+            if(Refine()) // 重新利用所有先前计算的内点再计算一次
             {
                 nInliers = mnRefinedInliers;
                 vbInliers = vector<bool>(mvpMapPointMatches.size(),false);
@@ -330,6 +330,7 @@ bool PnPsolver::Refine()
     // Check inliers
     CheckInliers();
 
+    // 通过CheckInliers函数得到那些inlier点用来提纯
     mnRefinedInliers =mnInliersi;
     mvbRefinedInliers = mvbInliersi;
 
@@ -348,7 +349,7 @@ bool PnPsolver::Refine()
     return false;
 }
 
-
+// 通过之前求解的(R t)检查哪些3D-2D点对属于inliers
 void PnPsolver::CheckInliers()
 {
     mnInliersi=0;
@@ -466,7 +467,7 @@ void PnPsolver::choose_control_points(void)
 }
 
 // 求解四个控制点的系数alphas
-// (a2 a3 a4)' = inverse(cws2-cws1 cws3-cws1 cws4-cws1)*(pws-cws1)，a1 = 1-a2-a3-a4
+// (a2 a3 a4)' = inverse(cws2-cws1 cws3-cws1 cws4-cws1)*(pws-cws1), a1 = 1-a2-a3-a4
 // 每一个3D控制点，都有一组alphas与之对应
 // cws1 cws2 cws3 cws4为四个控制点的坐标
 // pws为3D参考点的坐标
@@ -476,6 +477,17 @@ void PnPsolver::compute_barycentric_coordinates(void)
   CvMat CC     = cvMat(3, 3, CV_64F, cc);
   CvMat CC_inv = cvMat(3, 3, CV_64F, cc_inv);
 
+  // 第一个控制点在质心的位置,后面三个控制点减去第一个控制点的坐标 (以第一个控制点为原点)
+  // 步骤1:去掉质心后得到　ｘ　ｙ　ｚ　轴
+  //
+  // cws的排列 |cws1_x cws1_y cws1_z|  ---> |cws1|
+  //          |cws2_x cws2_y cws2_z|       |cws2|
+  //          |cws3_x cws3_y cws3_z|       |cws3|
+  //          |cws4_x cws4_y cws4_z|       |cws4|
+  //
+  // cc的排列  |cc2_x cc3_x cc4_x|  --->|cc2 cc3 cc4|
+  //          |cc2_y cc3_y cc4_y|
+  //          |cc2_z cc3_z cc4_z|
   for(int i = 0; i < 3; i++)
     for(int j = 1; j < 4; j++)
       cc[3 * i + j - 1] = cws[j][i] - cws[0][i];
@@ -483,18 +495,24 @@ void PnPsolver::compute_barycentric_coordinates(void)
   cvInvert(&CC, &CC_inv, CV_SVD);
   double * ci = cc_inv;
   for(int i = 0; i < number_of_correspondences; i++) {
-    double * pi = pws + 3 * i;
-    double * a = alphas + 4 * i;
+    double * pi = pws + 3 * i;    // pi指向第i个3D点的首地址
+    double * a = alphas + 4 * i;  // a指向第i个控制点系数alphas的首地址
 
+    // pi[]-cws[0][]表示将pi和步骤1进行相同的平移
     for(int j = 0; j < 3; j++)
       a[1 + j] =
-	ci[3 * j    ] * (pi[0] - cws[0][0]) +
-	ci[3 * j + 1] * (pi[1] - cws[0][1]) +
-	ci[3 * j + 2] * (pi[2] - cws[0][2]);
+          ci[3 * j    ] * (pi[0] - cws[0][0]) +
+          ci[3 * j + 1] * (pi[1] - cws[0][1]) +
+          ci[3 * j + 2] * (pi[2] - cws[0][2]);
     a[0] = 1.0f - a[1] - a[2] - a[3];
   }
 }
 
+// 填充最小二乘的M矩阵
+// 对每一个3D参考点：
+// |ai1  0  -ai1*ui ai2  0  -ai2*ui ai3  0  -ai3*ui ai4  0  -ai4*ui|
+// | 0  ai1 -ai1*vi  0  ai2 -ai2*vi  0  ai3 -ai3*vi  0  ai4 -ai4*vi|
+// 其中i从0到4
 void PnPsolver::fill_M(CvMat * M,
 		  const int row, const double * as, const double u, const double v)
 {
@@ -512,6 +530,7 @@ void PnPsolver::fill_M(CvMat * M,
   }
 }
 
+// 每一个控制点在相机坐标系下都表示为特征向量乘以beta的形式，EPnP论文的公式16
 void PnPsolver::compute_ccs(const double * betas, const double * ut)
 {
   for(int i = 0; i < 4; i++)
@@ -521,10 +540,11 @@ void PnPsolver::compute_ccs(const double * betas, const double * ut)
     const double * v = ut + 12 * (11 - i);
     for(int j = 0; j < 4; j++)
       for(int k = 0; k < 3; k++)
-	ccs[j][k] += betas[i] * v[3 * j + k];
+        ccs[j][k] += betas[i] * v[3 * j + k];
   }
 }
 
+// 用四个控制点作为单位向量表示下的相机坐标系下3D点的坐标
 void PnPsolver::compute_pcs(void)
 {
   for(int i = 0; i < number_of_correspondences; i++) {
@@ -543,26 +563,34 @@ double PnPsolver::compute_pose(double R[3][3], double t[3])
   // 步骤2：计算世界坐标系下每个3D点用4个控制点线性表达时的系数alphas，公式1
   compute_barycentric_coordinates();
 
+  // 步骤3: 构造 M 矩阵, 公式 (3)(4) --> (5) (6) (7)
   CvMat * M = cvCreateMat(2 * number_of_correspondences, 12, CV_64F);
 
   for(int i = 0; i < number_of_correspondences; i++)
     fill_M(M, 2 * i, alphas + 4 * i, us[2 * i], us[2 * i + 1]);
 
+  // 步骤4: 求解 Mx = 0
+  // SVD 分解 M'M
   double mtm[12 * 12], d[12], ut[12 * 12];
   CvMat MtM = cvMat(12, 12, CV_64F, mtm);
   CvMat D   = cvMat(12,  1, CV_64F, d);
   CvMat Ut  = cvMat(12, 12, CV_64F, ut);
 
   cvMulTransposed(M, &MtM, 1);
-  cvSVD(&MtM, &D, &Ut, 0, CV_SVD_MODIFY_A | CV_SVD_U_T);
+  cvSVD(&MtM, &D, &Ut, 0, CV_SVD_MODIFY_A | CV_SVD_U_T);  //得到向量ut
   cvReleaseMat(&M);
 
   double l_6x10[6 * 10], rho[6];
   CvMat L_6x10 = cvMat(6, 10, CV_64F, l_6x10);
   CvMat Rho    = cvMat(6,  1, CV_64F, rho);
 
+  // 步骤5: 根据公式 (10) (13) 构造 L 和 rho 矩阵
   compute_L_6x10(ut, l_6x10);
   compute_rho(rho);
+
+  // 不管什么情况，都假设论文中N=4，并求解部分betas（如果全求解出来会有冲突）
+  // 通过优化得到剩下的betas
+  // 最后计算R t
 
   double Betas[4][4], rep_errors[4];
   double Rs[4][3][3], ts[4][3];
@@ -579,6 +607,7 @@ double PnPsolver::compute_pose(double R[3][3], double t[3])
   gauss_newton(&L_6x10, &Rho, Betas[3]);
   rep_errors[3] = compute_R_and_t(ut, Betas[3], Rs[3], ts[3]);
 
+  // 选着最优的 R 和 t, 并存储
   int N = 1;
   if (rep_errors[2] < rep_errors[1]) N = 2;
   if (rep_errors[3] < rep_errors[N]) N = 3;
@@ -598,6 +627,7 @@ void PnPsolver::copy_R_and_t(const double R_src[3][3], const double t_src[3],
   }
 }
 
+// 两点间距离的平方
 double PnPsolver::dist2(const double * p1, const double * p2)
 {
   return
@@ -606,11 +636,13 @@ double PnPsolver::dist2(const double * p1, const double * p2)
     (p1[2] - p2[2]) * (p1[2] - p2[2]);
 }
 
+// 向量点乘
 double PnPsolver::dot(const double * v1, const double * v2)
 {
   return v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
 }
 
+// 计算重投影误差
 double PnPsolver::reprojection_error(const double R[3][3], const double t[3])
 {
   double sum2 = 0.0;
@@ -630,8 +662,10 @@ double PnPsolver::reprojection_error(const double R[3][3], const double t[3])
   return sum2 / number_of_correspondences;
 }
 
+// 根据世界坐标系下的四个控制点与机体坐标下对应的四个控制点（和世界坐标系下四个控制点相同尺度），求取R t
 void PnPsolver::estimate_R_and_t(double R[3][3], double t[3])
 {
+  // 步骤1: 分别求世界坐标系下和相机坐标系下4个空间点的质心
   double pc0[3], pw0[3];
 
   pc0[0] = pc0[1] = pc0[2] = 0.0;
@@ -671,10 +705,12 @@ void PnPsolver::estimate_R_and_t(double R[3][3], double t[3])
 
   cvSVD(&ABt, &ABt_D, &ABt_U, &ABt_V, CV_SVD_MODIFY_A);
 
+  // 矩阵乘法 UV'
   for(int i = 0; i < 3; i++)
     for(int j = 0; j < 3; j++)
       R[i][j] = dot(abt_u + 3 * i, abt_v + 3 * j);
 
+  // 求R行列式的值
   const double det =
     R[0][0] * R[1][1] * R[2][2] + R[0][1] * R[1][2] * R[2][0] + R[0][2] * R[1][0] * R[2][1] -
     R[0][2] * R[1][1] * R[2][0] - R[0][1] * R[1][0] * R[2][2] - R[0][0] * R[1][2] * R[2][1];
@@ -697,12 +733,13 @@ void PnPsolver::print_pose(const double R[3][3], const double t[3])
   cout << R[2][0] << " " << R[2][1] << " " << R[2][2] << " " << t[2] << endl;
 }
 
+// 修正符号, 3d空间点的深度值为正
 void PnPsolver::solve_for_sign(void)
 {
   if (pcs[2] < 0.0) {
     for(int i = 0; i < 4; i++)
       for(int j = 0; j < 3; j++)
-	ccs[i][j] = -ccs[i][j];
+	    ccs[i][j] = -ccs[i][j];
 
     for(int i = 0; i < number_of_correspondences; i++) {
       pcs[3 * i    ] = -pcs[3 * i];
@@ -712,22 +749,27 @@ void PnPsolver::solve_for_sign(void)
   }
 }
 
+// 计算 R 和 t
 double PnPsolver::compute_R_and_t(const double * ut, const double * betas,
 			     double R[3][3], double t[3])
 {
+  // 计算相机参考系下的4个控制点
   compute_ccs(betas, ut);
+  // 计算相机参考系下的4个控制点作为单位表示下的3d点坐标
   compute_pcs();
 
+  // 修正符号, 3d空间点的深度值为正
   solve_for_sign();
 
+  // 估计出 R 和 t
   estimate_R_and_t(R, t);
 
+  // 返回重投影误差
   return reprojection_error(R, t);
 }
 
 // betas10        = [B11 B12 B22 B13 B23 B33 B14 B24 B34 B44]
 // betas_approx_1 = [B11 B12     B13         B14]
-
 void PnPsolver::find_betas_approx_1(const CvMat * L_6x10, const CvMat * Rho,
 			       double * betas)
 {
@@ -759,7 +801,6 @@ void PnPsolver::find_betas_approx_1(const CvMat * L_6x10, const CvMat * Rho,
 
 // betas10        = [B11 B12 B22 B13 B23 B33 B14 B24 B34 B44]
 // betas_approx_2 = [B11 B12 B22                            ]
-
 void PnPsolver::find_betas_approx_2(const CvMat * L_6x10, const CvMat * Rho,
 			       double * betas)
 {
@@ -791,7 +832,6 @@ void PnPsolver::find_betas_approx_2(const CvMat * L_6x10, const CvMat * Rho,
 
 // betas10        = [B11 B12 B22 B13 B23 B33 B14 B24 B34 B44]
 // betas_approx_3 = [B11 B12 B22 B13 B23                    ]
-
 void PnPsolver::find_betas_approx_3(const CvMat * L_6x10, const CvMat * Rho,
 			       double * betas)
 {
@@ -821,6 +861,9 @@ void PnPsolver::find_betas_approx_3(const CvMat * L_6x10, const CvMat * Rho,
   betas[3] = 0.0;
 }
 
+// 计算并填充矩阵L
+// |β0(v00-v01) + β1(v10-v11) + β2(v20-v21) + β3(v30-v31)|^2 = |ρ0-1|^2
+// 例如上式为 l_6x10 矩阵的第一行 得来. 其它行以此类推. 其中 β00 = β0*β0 类似, β为未知量
 void PnPsolver::compute_L_6x10(const double * ut, double * l_6x10)
 {
   const double * v[4];
@@ -841,8 +884,8 @@ void PnPsolver::compute_L_6x10(const double * ut, double * l_6x10)
 
       b++;
       if (b > 3) {
-	a++;
-	b = a + 1;
+        a++;
+        b = a + 1;
       }
     }
   }
@@ -863,6 +906,7 @@ void PnPsolver::compute_L_6x10(const double * ut, double * l_6x10)
   }
 }
 
+// 计算四个控制点任意两点间的距离,总共 6 个距离
 void PnPsolver::compute_rho(double * rho)
 {
   rho[0] = dist2(cws[0], cws[1]);
@@ -873,6 +917,12 @@ void PnPsolver::compute_rho(double * rho)
   rho[5] = dist2(cws[2], cws[3]);
 }
 
+// 误差方程为论文中公式 (15) -->　err = [(β*dvc)^2 - ρ]^2
+// f(β) = β*dvc (微小扰动泰勒展开一阶近似)--> f(β+△β) = f(β) + f'(β)△β = β*dvc +　dvc*△β
+// err = [(β*dvc +　dvc*△β)^2 - ρ]^2 = [(β^2)*(dvc^2) + 2β*(dev^2)△β + (dvc^2)(△β^2) - ρ]^2
+// 由于 (dvc^2)(△β^2) 很小直接舍弃, 令上式[]内的式子等于零:
+// 2β*(dvc^2) * △β = ρ - (β*dvc)^2  因此可得:
+// A = 2β*(dvc^2) , b = ρ - (β*dvc)^2
 void PnPsolver::compute_A_and_b_gauss_newton(const double * l_6x10, const double * rho,
 					double betas[4], CvMat * A, CvMat * b)
 {
@@ -880,11 +930,16 @@ void PnPsolver::compute_A_and_b_gauss_newton(const double * l_6x10, const double
     const double * rowL = l_6x10 + i * 10;
     double * rowA = A->data.db + i * 4;
 
+    // A = 2β*(dvc^2)
+    // 有些项中乘2, 而有些项没有, 这是因为构造 l_6x10 矩阵时候的本身如果不同i j向量的差项就已经乘以2了
+    //! dvc * dvc : 存在与 βi 对应相关的 i 项相加 (个人理解, 但是为什么是这样并不是很清楚)
     rowA[0] = 2 * rowL[0] * betas[0] +     rowL[1] * betas[1] +     rowL[3] * betas[2] +     rowL[6] * betas[3];
     rowA[1] =     rowL[1] * betas[0] + 2 * rowL[2] * betas[1] +     rowL[4] * betas[2] +     rowL[7] * betas[3];
     rowA[2] =     rowL[3] * betas[0] +     rowL[4] * betas[1] + 2 * rowL[5] * betas[2] +     rowL[8] * betas[3];
     rowA[3] =     rowL[6] * betas[0] +     rowL[7] * betas[1] +     rowL[8] * betas[2] + 2 * rowL[9] * betas[3];
 
+    // b = ρ - (β*dvc)^2
+    // b 的构造可以简单的根据 l_6x10 * β_xx = ρ 来构造
     cvmSet(b, i, 0, rho[i] -
 	   (
 	    rowL[0] * betas[0] * betas[0] +
@@ -901,6 +956,7 @@ void PnPsolver::compute_A_and_b_gauss_newton(const double * l_6x10, const double
   }
 }
 
+// 利用高斯牛顿法进行迭代更新
 void PnPsolver::gauss_newton(const CvMat * L_6x10, const CvMat * Rho,
 			double betas[4])
 {
@@ -912,10 +968,13 @@ void PnPsolver::gauss_newton(const CvMat * L_6x10, const CvMat * Rho,
   CvMat X = cvMat(4, 1, CV_64F, x);
 
   for(int k = 0; k < iterations_number; k++) {
+    // 构造高斯牛顿法最终求解方程
     compute_A_and_b_gauss_newton(L_6x10->data.db, Rho->data.db,
 				 betas, &A, &B);
+    // 利用 qr 分解进行方程求解
     qr_solve(&A, &B, &X);
 
+    // 更新迭代量
     for(int i = 0; i < 4; i++)
       betas[i] += x[i];
   }
@@ -940,9 +999,9 @@ void PnPsolver::qr_solve(CvMat * A, CvMat * b, CvMat * X)
   }
 
   double * pA = A->data.db, * ppAkk = pA;
-  for(int k = 0; k < nc; k++) {
+  for (int k = 0; k < nc; k++) {
     double * ppAik = ppAkk, eta = fabs(*ppAik);
-    for(int i = k + 1; i < nr; i++) {
+    for (int i = k + 1; i < nr; i++) {
       double elt = fabs(*ppAik);
       if (eta < elt) eta = elt;
       ppAik += nc;
@@ -954,29 +1013,29 @@ void PnPsolver::qr_solve(CvMat * A, CvMat * b, CvMat * X)
       return;
     } else {
       double * ppAik = ppAkk, sum = 0.0, inv_eta = 1. / eta;
-      for(int i = k; i < nr; i++) {
-	*ppAik *= inv_eta;
-	sum += *ppAik * *ppAik;
-	ppAik += nc;
+      for (int i = k; i < nr; i++) {
+        *ppAik *= inv_eta;
+        sum += *ppAik * *ppAik;
+        ppAik += nc;
       }
       double sigma = sqrt(sum);
       if (*ppAkk < 0)
-	sigma = -sigma;
+	    sigma = -sigma;
       *ppAkk += sigma;
       A1[k] = sigma * *ppAkk;
       A2[k] = -eta * sigma;
-      for(int j = k + 1; j < nc; j++) {
-	double * ppAik = ppAkk, sum = 0;
-	for(int i = k; i < nr; i++) {
-	  sum += *ppAik * ppAik[j - k];
-	  ppAik += nc;
-	}
-	double tau = sum / A1[k];
-	ppAik = ppAkk;
-	for(int i = k; i < nr; i++) {
-	  ppAik[j - k] -= tau * *ppAik;
-	  ppAik += nc;
-	}
+      for (int j = k + 1; j < nc; j++) {
+	    double * ppAik = ppAkk, sum = 0;
+        for (int i = k; i < nr; i++) {
+          sum += *ppAik * ppAik[j - k];
+          ppAik += nc;
+        }
+        double tau = sum / A1[k];
+        ppAik = ppAkk;
+        for (int i = k; i < nr; i++) {
+          ppAik[j - k] -= tau * *ppAik;
+          ppAik += nc;
+        }
       }
     }
     ppAkk += nc + 1;
@@ -984,7 +1043,7 @@ void PnPsolver::qr_solve(CvMat * A, CvMat * b, CvMat * X)
 
   // b <- Qt b
   double * ppAjj = pA, * pb = b->data.db;
-  for(int j = 0; j < nc; j++) {
+  for (int j = 0; j < nc; j++) {
     double * ppAij = ppAjj, tau = 0;
     for(int i = j; i < nr; i++)	{
       tau += *ppAij * pb[i];
@@ -1002,10 +1061,10 @@ void PnPsolver::qr_solve(CvMat * A, CvMat * b, CvMat * X)
   // X = R-1 b
   double * pX = X->data.db;
   pX[nc - 1] = pb[nc - 1] / A2[nc - 1];
-  for(int i = nc - 2; i >= 0; i--) {
+  for (int i = nc - 2; i >= 0; i--) {
     double * ppAij = pA + i * nc + (i + 1), sum = 0;
 
-    for(int j = i + 1; j < nc; j++) {
+    for (int j = i + 1; j < nc; j++) {
       sum += *ppAij * pX[j];
       ppAij++;
     }
