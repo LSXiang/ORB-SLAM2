@@ -42,6 +42,19 @@ ORBmatcher::ORBmatcher(float nnratio, bool checkOri): mfNNratio(nnratio), mbChec
 {
 }
 
+/**
+ * @brief 通过投影，对Local MapPoint进行跟踪
+ *
+ * 将Local MapPoint投影到当前帧中, 由此增加当前帧的MapPoints \n
+ * 在SearchLocalPoints()中已经将Local MapPoints重投影（isInFrustum()）到当前帧 \n
+ * 并标记了这些点是否在当前帧的视野中，即mbTrackInView \n
+ * 对这些MapPoints，在其投影点附近根据描述子距离选取匹配，以及最终的方向投票机制进行剔除
+ * @param  F           当前帧
+ * @param  vpMapPoints Local MapPoints
+ * @param  th          阈值
+ * @return             成功匹配的数量
+ * @see SearchLocalPoints() isInFrustum()
+ */
 int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoints, const float th)
 {
     int nmatches=0;
@@ -51,20 +64,25 @@ int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoint
     for(size_t iMP=0; iMP<vpMapPoints.size(); iMP++)
     {
         MapPoint* pMP = vpMapPoints[iMP];
+
+        // 判断该点是否要投影
         if(!pMP->mbTrackInView)
             continue;
 
         if(pMP->isBad())
             continue;
 
+        // 通过距离预测的金字塔层数，该层数相对于当前的帧
         const int &nPredictedLevel = pMP->mnTrackScaleLevel;
 
         // The size of the window will depend on the viewing direction
+        // 搜索窗口的大小取决于视角, 若当前视角和平均视角夹角接近0度时, r取一个较小的值
         float r = RadiusByViewingCos(pMP->mTrackViewCos);
 
         if(bFactor)
             r*=th;
 
+        // 通过投影点(投影到当前帧,见isInFrustum())以及搜索窗口和预测的尺度进行搜索, 找出附近的兴趣点
         const vector<size_t> vIndices =
                 F.GetFeaturesInArea(pMP->mTrackProjX,pMP->mTrackProjY,r*F.mvScaleFactors[nPredictedLevel],nPredictedLevel-1,nPredictedLevel);
 
@@ -84,6 +102,7 @@ int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoint
         {
             const size_t idx = *vit;
 
+            // 如果Frame中的该兴趣点已经有对应的MapPoint了,则退出该次循环
             if(F.mvpMapPoints[idx])
                 if(F.mvpMapPoints[idx]->Observations()>0)
                     continue;
@@ -99,6 +118,7 @@ int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoint
 
             const int dist = DescriptorDistance(MPdescriptor,d);
 
+            // 根据描述子寻找描述子距离最小和次小的特征点
             if(dist<bestDist)
             {
                 bestDist2=bestDist;
@@ -120,7 +140,7 @@ int ORBmatcher::SearchByProjection(Frame &F, const vector<MapPoint*> &vpMapPoint
             if(bestLevel==bestLevel2 && bestDist>mfNNratio*bestDist2)
                 continue;
 
-            F.mvpMapPoints[bestIdx]=pMP;
+            F.mvpMapPoints[bestIdx]=pMP;  // 为Frame中的兴趣点增加对应的MapPoint
             nmatches++;
         }
     }
