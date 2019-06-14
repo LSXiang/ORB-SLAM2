@@ -722,6 +722,16 @@ int ORBmatcher::SearchByBoW(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
     return nmatches;
 }
 
+/**
+ * @brief 利用基本矩阵F12，在两个关键帧之间未匹配的特征点中产生新的3d点
+ *
+ * @param pKF1          关键帧1
+ * @param pKF2          关键帧2
+ * @param F12           基础矩阵
+ * @param vMatchedPairs 存储匹配特征点对，特征点用其在关键帧中的索引表示
+ * @param bOnlyStereo   在双目和rgbd情况下，要求特征点在右图存在匹配
+ * @return              成功匹配的数量
+ */
 int ORBmatcher::SearchForTriangulation(KeyFrame *pKF1, KeyFrame *pKF2, cv::Mat F12,
                                        vector<pair<size_t, size_t> > &vMatchedPairs, const bool bOnlyStereo)
 {    
@@ -729,11 +739,13 @@ int ORBmatcher::SearchForTriangulation(KeyFrame *pKF1, KeyFrame *pKF2, cv::Mat F
     const DBoW2::FeatureVector &vFeatVec2 = pKF2->mFeatVec;
 
     //Compute epipole in second image
-    cv::Mat Cw = pKF1->GetCameraCenter();
-    cv::Mat R2w = pKF2->GetRotation();
-    cv::Mat t2w = pKF2->GetTranslation();
-    cv::Mat C2 = R2w*Cw+t2w;
+    // 计算KF1的相机中心在KF2图像平面的坐标，即极点坐标
+    cv::Mat Cw = pKF1->GetCameraCenter(); // twc1
+    cv::Mat R2w = pKF2->GetRotation();    // Rc2w
+    cv::Mat t2w = pKF2->GetTranslation(); // tc2w
+    cv::Mat C2 = R2w*Cw+t2w;  // tc2c1 KF1的相机中心在KF2坐标系的表示
     const float invz = 1.0f/C2.at<float>(2);
+    // 步骤0：得到KF1的相机光心在KF2中的坐标（极点坐标）
     const float ex =pKF2->fx*C2.at<float>(0)*invz+pKF2->cx;
     const float ey =pKF2->fy*C2.at<float>(1)*invz+pKF2->cy;
 

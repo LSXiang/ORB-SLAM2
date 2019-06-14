@@ -241,6 +241,11 @@ int KeyFrame::GetWeight(KeyFrame *pKF)
         return 0;
 }
 
+/**
+ * @brief Add MapPoint to KeyFrame
+ * @param pMP MapPoint
+ * @param idx MapPoint在KeyFrame中的索引
+ */
 void KeyFrame::AddMapPoint(MapPoint *pMP, const size_t &idx)
 {
     unique_lock<mutex> lock(mMutexFeatures);

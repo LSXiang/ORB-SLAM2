@@ -48,6 +48,10 @@ void Map::AddMapPoint(MapPoint *pMP)
     mspMapPoints.insert(pMP);
 }
 
+/**
+ * @brief Erase MapPoint from the map
+ * @param pMP MapPoint
+ */
 void Map::EraseMapPoint(MapPoint *pMP)
 {
     unique_lock<mutex> lock(mMutexMap);

@@ -177,6 +177,7 @@ int MapPoint::Observations()
     return nObs;
 }
 
+// 告知可以观测到该MapPoint的Frame，该MapPoint已被删除
 void MapPoint::SetBadFlag()
 {
     map<KeyFrame*,size_t> obs;
@@ -184,13 +185,13 @@ void MapPoint::SetBadFlag()
         unique_lock<mutex> lock1(mMutexFeatures);
         unique_lock<mutex> lock2(mMutexPos);
         mbBad=true;
-        obs = mObservations;
-        mObservations.clear();
+        obs = mObservations;    // 把mObservations转存到obs，obs和mObservations里存的是指针，赋值过程为浅拷贝
+        mObservations.clear();  // 把mObservations指向的内存释放，obs作为局部变量之后自动删除
     }
     for(map<KeyFrame*,size_t>::iterator mit=obs.begin(), mend=obs.end(); mit!=mend; mit++)
     {
         KeyFrame* pKF = mit->first;
-        pKF->EraseMapPointMatch(mit->second);
+        pKF->EraseMapPointMatch(mit->second); // 告诉可以观测到该MapPoint的KeyFrame，该MapPoint被删了
     }
 
     mpMap->EraseMapPoint(this);
@@ -243,6 +244,7 @@ void MapPoint::Replace(MapPoint* pMP)
     mpMap->EraseMapPoint(this);
 }
 
+// 没有经过MapPointCulling检测的MapPoints
 bool MapPoint::isBad()
 {
     unique_lock<mutex> lock(mMutexFeatures);
@@ -250,12 +252,27 @@ bool MapPoint::isBad()
     return mbBad;
 }
 
+/**
+ * @brief Increase Visible
+ *
+ * Visible表示：
+ * 1. 该MapPoint在某些帧的视野范围内，通过Frame::isInFrustum()函数判断
+ * 2. 该MapPoint被这些帧观测到，但并不一定能和这些帧的特征点匹配上
+ *    例如：有一个MapPoint（记为M），在某一帧F的视野范围内，
+ *    但并不表明该点M可以和F这一帧的某个特征点能匹配上
+ */
 void MapPoint::IncreaseVisible(int n)
 {
     unique_lock<mutex> lock(mMutexFeatures);
     mnVisible+=n;
 }
 
+/**
+ * @brief Increase Found
+ *
+ * 能找到该点的帧数+n，n默认为1
+ * @see Tracking::TrackLocalMap()
+ */
 void MapPoint::IncreaseFound(int n)
 {
     unique_lock<mutex> lock(mMutexFeatures);
@@ -364,6 +381,11 @@ int MapPoint::GetIndexInKeyFrame(KeyFrame *pKF)
         return -1;
 }
 
+/**
+ * @brief check MapPoint is in keyframe
+ * @param  pKF KeyFrame
+ * @return     true if in pKF
+ */
 bool MapPoint::IsInKeyFrame(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexFeatures);
