@@ -516,14 +516,39 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     return nInitialCorrespondences-nBad;
 }
 
+/**
+ * @brief Local Bundle Adjustment
+ *
+ * 1. Vertex:
+ *     - g2o::VertexSE3Expmap()，LocalKeyFrames，即当前关键帧的位姿、与当前关键帧相连的关键帧的位姿
+ *     - g2o::VertexSE3Expmap()，FixedCameras，即能观测到LocalMapPoints的关键帧（并且不属于LocalKeyFrames）的位姿，在优化中这些关键帧的位姿不变
+ *     - g2o::VertexSBAPointXYZ()，LocalMapPoints，即LocalKeyFrames能观测到的所有MapPoints的位置
+ * 2. Edge:
+ *     - g2o::EdgeSE3ProjectXYZ()，BaseBinaryEdge
+ *         + Vertex：关键帧的Tcw，MapPoint的Pw
+ *         + measurement：MapPoint在关键帧中的二维位置(u,v)
+ *         + InfoMatrix: invSigma2(与特征点所在的尺度有关)
+ *     - g2o::EdgeStereoSE3ProjectXYZ()，BaseBinaryEdge
+ *         + Vertex：关键帧的Tcw，MapPoint的Pw
+ *         + measurement：MapPoint在关键帧中的二维位置(ul,v,ur)
+ *         + InfoMatrix: invSigma2(与特征点所在的尺度有关)
+ *
+ * @param pKF        KeyFrame
+ * @param pbStopFlag 是否停止优化的标志
+ * @param pMap       在优化后，更新状态时需要用到Map的互斥量mMutexMapUpdate
+ */
 void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap)
-{    
+{
+    // 该优化函数用于LocalMapping线程的局部BA优化
+
     // Local KeyFrames: First Breath Search from Current Keyframe
     list<KeyFrame*> lLocalKeyFrames;
 
+    // 步骤1：将当前关键帧加入lLocalKeyFrames
     lLocalKeyFrames.push_back(pKF);
     pKF->mnBALocalForKF = pKF->mnId;
 
+    // 步骤2：找到关键帧连接的关键帧（一级相连），加入lLocalKeyFrames中
     const vector<KeyFrame*> vNeighKFs = pKF->GetVectorCovisibleKeyFrames();
     for(int i=0, iend=vNeighKFs.size(); i<iend; i++)
     {
@@ -534,6 +559,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     }
 
     // Local MapPoints seen in Local KeyFrames
+    // 步骤3：遍历lLocalKeyFrames中关键帧，将它们观测的MapPoints加入到lLocalMapPoints
     list<MapPoint*> lLocalMapPoints;
     for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin() , lend=lLocalKeyFrames.end(); lit!=lend; lit++)
     {
@@ -546,12 +572,13 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     if(pMP->mnBALocalForKF!=pKF->mnId)
                     {
                         lLocalMapPoints.push_back(pMP);
-                        pMP->mnBALocalForKF=pKF->mnId;
+                        pMP->mnBALocalForKF=pKF->mnId;  // 防止重复添加
                     }
         }
     }
 
     // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
+    // 步骤4：得到能被局部MapPoints观测到，但不属于局部关键帧的关键帧，这些关键帧在局部BA优化时不优化
     list<KeyFrame*> lFixedCameras;
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
     {
@@ -560,9 +587,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         {
             KeyFrame* pKFi = mit->first;
 
+            // pKFi->mnBALocalForKF!=pKF->mnId表示局部关键帧，
+            // 其它的关键帧虽然能观测到，但不属于局部关键帧
             if(pKFi->mnBALocalForKF!=pKF->mnId && pKFi->mnBAFixedForKF!=pKF->mnId)
             {                
-                pKFi->mnBAFixedForKF=pKF->mnId;
+                pKFi->mnBAFixedForKF=pKF->mnId; // 防止重复添加
                 if(!pKFi->isBad())
                     lFixedCameras.push_back(pKFi);
             }

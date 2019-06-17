@@ -645,15 +645,18 @@ void KeyFrame::EraseConnection(KeyFrame* pKF)
         UpdateBestCovisibles();
 }
 
+// r为边长（半径）
 vector<size_t> KeyFrame::GetFeaturesInArea(const float &x, const float &y, const float &r) const
 {
     vector<size_t> vIndices;
     vIndices.reserve(N);
 
+    // floor向下取整，mfGridElementWidthInv为每个像素占多少个格子
     const int nMinCellX = max(0,(int)floor((x-mnMinX-r)*mfGridElementWidthInv));
     if(nMinCellX>=mnGridCols)
         return vIndices;
 
+    // ceil向上取整
     const int nMaxCellX = min((int)mnGridCols-1,(int)ceil((x-mnMinX+r)*mfGridElementWidthInv));
     if(nMaxCellX<0)
         return vIndices;
@@ -691,11 +694,21 @@ bool KeyFrame::IsInImage(const float &x, const float &y) const
     return (x>=mnMinX && x<mnMaxX && y>=mnMinY && y<mnMaxY);
 }
 
+/**
+ * @brief Backprojects a keypoint (if stereo/depth info available) into 3D world coordinates.
+ * @param  i 第i个keypoint
+ * @return   3D点（相对于世界坐标系）
+ */
 cv::Mat KeyFrame::UnprojectStereo(int i)
 {
     const float z = mvDepth[i];
     if(z>0)
     {
+        // 由2维图像反投影到相机坐标系
+        // mvDepth是在ComputeStereoMatches函数中求取的
+        // mvDepth对应的校正前的特征点，因此这里对校正前特征点反投影
+        // 可在Frame::UnprojectStereo中却是对校正后的特征点mvKeysUn反投影
+        // 在ComputeStereoMatches函数中应该对校正后的特征点求深度？？ (wubo???)
         const float u = mvKeys[i].pt.x;
         const float v = mvKeys[i].pt.y;
         const float x = (u-cx)*z*invfx;
@@ -703,6 +716,9 @@ cv::Mat KeyFrame::UnprojectStereo(int i)
         cv::Mat x3Dc = (cv::Mat_<float>(3,1) << x, y, z);
 
         unique_lock<mutex> lock(mMutexPose);
+        // 由相机坐标系转换到世界坐标系
+        // Twc为相机坐标系到世界坐标系的变换矩阵
+        // Twc.rosRange(0,3).colRange(0,3)取Twc矩阵的前3行与前3列
         return Twc.rowRange(0,3).colRange(0,3)*x3Dc+Twc.rowRange(0,3).col(3);
     }
     else
