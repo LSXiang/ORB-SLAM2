@@ -61,6 +61,9 @@ void LoopClosing::Run()
     while(1)
     {
         // Check if there are keyframes in the queue
+        // LoopClosing 中的关键帧是 LocalMapping 发送过来的, LocalMapping是 Tracking 中发送过来的
+        // 在 LocalMapping 中通过 InsertKeyFrame 将关键帧插入闭环检测队列 mlpLoopKeyframeQueue
+
         if(CheckNewKeyFrames())
         {
             // Detect loop candidates and check covisibility consistency
@@ -87,6 +90,7 @@ void LoopClosing::Run()
     SetFinish();
 }
 
+// 向 LoopClosing 中插入关键帧
 void LoopClosing::InsertKeyFrame(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexLoopQueue);
@@ -94,6 +98,10 @@ void LoopClosing::InsertKeyFrame(KeyFrame *pKF)
         mlpLoopKeyFrameQueue.push_back(pKF);
 }
 
+/**
+ * 查看列表中是否有等待被插入的关键帧
+ * @return 如果存在，返回true
+ */
 bool LoopClosing::CheckNewKeyFrames()
 {
     unique_lock<mutex> lock(mMutexLoopQueue);
@@ -103,6 +111,7 @@ bool LoopClosing::CheckNewKeyFrames()
 bool LoopClosing::DetectLoop()
 {
     {
+        // 从队列中取出一个关键帧
         unique_lock<mutex> lock(mMutexLoopQueue);
         mpCurrentKF = mlpLoopKeyFrameQueue.front();
         mlpLoopKeyFrameQueue.pop_front();
@@ -111,6 +120,7 @@ bool LoopClosing::DetectLoop()
     }
 
     //If the map contains less than 10 KF or less than 10 KF have passed from last loop detection
+    // 步骤1：如果距离上次闭环没多久（小于10帧），或者map中关键帧总共还没有10帧，则不进行闭环检测
     if(mpCurrentKF->mnId<mLastLoopKFid+10)
     {
         mpKeyFrameDB->add(mpCurrentKF);
@@ -121,6 +131,8 @@ bool LoopClosing::DetectLoop()
     // Compute reference BoW similarity score
     // This is the lowest score to a connected keyframe in the covisibility graph
     // We will impose loop candidates to have a higher similarity than this
+    // VIII-A
+    // 步骤2：遍历所有共视关键帧，计算当前关键帧与每个共视关键的bow相似度得分，并得到最低得分minScore
     const vector<KeyFrame*> vpConnectedKeyFrames = mpCurrentKF->GetVectorCovisibleKeyFrames();
     const DBoW2::BowVector &CurrentBowVec = mpCurrentKF->mBowVec;
     float minScore = 1;
@@ -138,6 +150,7 @@ bool LoopClosing::DetectLoop()
     }
 
     // Query the database imposing the minimum score
+    // 步骤3: 在所有关键帧中找到闭环备选帧
     vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectLoopCandidates(mpCurrentKF, minScore);
 
     // If there are no loop candidates, just add new keyframe and return false
@@ -153,30 +166,41 @@ bool LoopClosing::DetectLoop()
     // Each candidate expands a covisibility group (keyframes connected to the loop candidate in the covisibility graph)
     // A group is consistent with a previous group if they share at least a keyframe
     // We must detect a consistent loop in several consecutive keyframes to accept it
-    mvpEnoughConsistentCandidates.clear();
+    // 步骤4：在候选帧中检测具有连续性的候选帧
+    // 1、每个候选帧将与自己相连的关键帧构成一个“子候选组spCandidateGroup”，vpCandidateKFs-->spCandidateGroup
+    // 2、检测“子候选组”中每一个关键帧是否存在于“连续组”，如果存在nCurrentConsistency++，则将该“子候选组”放入“当前连续组vCurrentConsistentGroups”
+    // 3、如果nCurrentConsistency大于等于3，那么该”子候选组“代表的候选帧过关，进入mvpEnoughConsistentCandidates
+    mvpEnoughConsistentCandidates.clear();  // 最终筛选后得到的闭环帧
 
+    // ConsistentGroup 数据类型为 pair<set<KeyFrame*>,int>
+    // ConsistentGroup.first 对应每个“连续组”中的关键帧, ConsistentGroup.second 为每个“连续组”的序号
     vector<ConsistentGroup> vCurrentConsistentGroups;
     vector<bool> vbConsistentGroup(mvConsistentGroups.size(),false);
     for(size_t i=0, iend=vpCandidateKFs.size(); i<iend; i++)
     {
         KeyFrame* pCandidateKF = vpCandidateKFs[i];
 
+        // 将自己以及自己相连的关键帧构成一个"子候选组"
         set<KeyFrame*> spCandidateGroup = pCandidateKF->GetConnectedKeyFrames();
         spCandidateGroup.insert(pCandidateKF);
 
         bool bEnoughConsistent = false;
         bool bConsistentForSomeGroup = false;
+        // 遍历之前的"子连续组"
         for(size_t iG=0, iendG=mvConsistentGroups.size(); iG<iendG; iG++)
         {
+            // 取出一个之前的子连续组
             set<KeyFrame*> sPreviousGroup = mvConsistentGroups[iG].first;
 
+            // 遍历每一个"子候选组", 检测候选组中每一个关键帧在"子连续组"中是否存在
+            // 如果有一帧共同存在于"子候选组"与之前的"子连续帧", 那么"子候选组"与该"子连续组"连续
             bool bConsistent = false;
             for(set<KeyFrame*>::iterator sit=spCandidateGroup.begin(), send=spCandidateGroup.end(); sit!=send;sit++)
             {
                 if(sPreviousGroup.count(*sit))
                 {
-                    bConsistent=true;
-                    bConsistentForSomeGroup=true;
+                    bConsistent=true;   // 该“子候选组”与该“子连续组”相连
+                    bConsistentForSomeGroup=true; // 该“子候选组”至少与一个”子连续组“相连
                     break;
                 }
             }
@@ -185,8 +209,9 @@ bool LoopClosing::DetectLoop()
             {
                 int nPreviousConsistency = mvConsistentGroups[iG].second;
                 int nCurrentConsistency = nPreviousConsistency + 1;
-                if(!vbConsistentGroup[iG])
+                if(!vbConsistentGroup[iG])  // 这里作者原本意思是不是应该是vbConsistentGroup[i]而不是vbConsistentGroup[iG]呢？（wubo???）
                 {
+                    // 将该“子候选组”的该关键帧打上编号加入到“当前连续组”
                     ConsistentGroup cg = make_pair(spCandidateGroup,nCurrentConsistency);
                     vCurrentConsistentGroups.push_back(cg);
                     vbConsistentGroup[iG]=true; //this avoid to include the same group more than once
@@ -200,8 +225,12 @@ bool LoopClosing::DetectLoop()
         }
 
         // If the group is not consistent with any previous group insert with consistency counter set to zero
+        // 如果该"子候选组"的所有关键帧都不存在于"子连续组", 那么 vCurrentConsistentGroups 将为空
+        // 于是就把"子候选组"全部拷贝到 vCurrentConsistentGroups, 并最终用于更新 mvConsistentGroups, 计数器设为0, 重新开始
         if(!bConsistentForSomeGroup)
         {
+            // 这个地方是不是最好clear一下vCurrentConsistentGroups呢？(wubo???)
+
             ConsistentGroup cg = make_pair(spCandidateGroup,0);
             vCurrentConsistentGroups.push_back(cg);
         }
@@ -228,6 +257,16 @@ bool LoopClosing::DetectLoop()
     return false;
 }
 
+/**
+ * @brief 计算当前帧与闭环帧的Sim3变换等
+ *
+ * 1. 通过Bow加速描述子的匹配，利用RANSAC粗略地计算出当前帧与闭环帧的Sim3（当前帧---闭环帧）
+ * 2. 根据估计的Sim3，对3D点进行投影找到更多匹配，通过优化的方法计算更精确的Sim3（当前帧---闭环帧）
+ * 3. 将闭环帧以及闭环帧相连的关键帧的MapPoints与当前帧的点进行匹配（当前帧---闭环帧+相连关键帧）
+ *
+ * 注意以上匹配的结果均都存在成员变量mvpCurrentMatchedPoints中，
+ * 实际的更新步骤见CorrectLoop()步骤3：Start Loop Fusion
+ */
 bool LoopClosing::ComputeSim3()
 {
     // For each consistent loop candidate we try to compute a Sim3
@@ -251,17 +290,21 @@ bool LoopClosing::ComputeSim3()
 
     for(int i=0; i<nInitialCandidates; i++)
     {
+        // 步骤1: 从筛选的闭环候选帧中获取一帧关键帧 pKF
         KeyFrame* pKF = mvpEnoughConsistentCandidates[i];
 
         // avoid that local mapping erase it while it is being processed in this thread
+        // 防止在 LocalMapping 中 keyFrameCulling 函数将此关键帧作为冗余帧剔除
         pKF->SetNotErase();
 
         if(pKF->isBad())
         {
-            vbDiscarded[i] = true;
+            vbDiscarded[i] = true;  // 直接将该候选帧舍弃
             continue;
         }
 
+        // 步骤2: 将当前帧 mpCurrentKF 与闭环候选帧 pKF 匹配
+        // 通过 BoW 加速得到 mpCurrentKF 与 pKF 之间的匹配特征点, vvpMapPointMatches 是匹配特征点对应的 MapPoints
         int nmatches = matcher.SearchByBoW(mpCurrentKF,pKF,vvpMapPointMatches[i]);
 
         if(nmatches<20)
@@ -271,18 +314,23 @@ bool LoopClosing::ComputeSim3()
         }
         else
         {
+            // if bFixScale is true, 6DoF optimization (stereo,rgbd), 7DoF otherwise (mono)
+            // 构造Sim3求解器
+            // 如果mbFixScale为true，则是6DoFf优化（双目 RGBD），如果是false，则是7DoF优化（单目）
             Sim3Solver* pSolver = new Sim3Solver(mpCurrentKF,pKF,vvpMapPointMatches[i],mbFixScale);
-            pSolver->SetRansacParameters(0.99,20,300);
+            pSolver->SetRansacParameters(0.99,20,300);  // 99%的概率选到内点 至少20个inliers 300次迭代
             vpSim3Solvers[i] = pSolver;
         }
 
         nCandidates++;
     }
 
-    bool bMatch = false;
+    bool bMatch = false;  // 用于标记是否有一个候选帧通过Sim3的求解与优化
 
     // Perform alternatively RANSAC iterations for each candidate
     // until one is succesful or all fail
+    // 一直循环所有的候选帧，每个候选帧迭代5次，如果5次迭代后得不到结果，就换下一个候选帧
+    // 直到有一个候选帧首次迭代成功bMatch为true，或者某个候选帧总的迭代次数超过限制，直接将它剔除
     while(nCandidates>0 && !bMatch)
     {
         for(int i=0; i<nInitialCandidates; i++)
@@ -295,12 +343,16 @@ bool LoopClosing::ComputeSim3()
             // Perform 5 Ransac Iterations
             vector<bool> vbInliers;
             int nInliers;
-            bool bNoMore;
+            bool bNoMore; // 这是局部变量，在pSolver->iterate(...)内进行初始化
 
+            // 步骤3：对步骤2中有较好的匹配的关键帧求取Sim3变换
             Sim3Solver* pSolver = vpSim3Solvers[i];
+            // 最多迭代5次, 返回的Scm是候选帧pKF到当前帧mpCurrentKF的Sim3变换（T12）
             cv::Mat Scm  = pSolver->iterate(5,bNoMore,vbInliers,nInliers);
 
             // If Ransac reachs max. iterations discard keyframe
+            // 经过n次循环，每次迭代5次，总共迭代 n*5 次
+            // 总迭代次数达到最大限制还没有求出合格的Sim3变换，该候选帧剔除
             if(bNoMore)
             {
                 vbDiscarded[i]=true;
@@ -313,22 +365,34 @@ bool LoopClosing::ComputeSim3()
                 vector<MapPoint*> vpMapPointMatches(vvpMapPointMatches[i].size(), static_cast<MapPoint*>(NULL));
                 for(size_t j=0, jend=vbInliers.size(); j<jend; j++)
                 {
+                    // 保存inlier的MapPoint
                     if(vbInliers[j])
                        vpMapPointMatches[j]=vvpMapPointMatches[i][j];
                 }
 
-                cv::Mat R = pSolver->GetEstimatedRotation();
-                cv::Mat t = pSolver->GetEstimatedTranslation();
-                const float s = pSolver->GetEstimatedScale();
+                // 步骤4：通过步骤3求取的Sim3变换引导关键帧匹配弥补步骤2中的漏匹配
+                // |sR t|
+                // |0  1|
+                cv::Mat R = pSolver->GetEstimatedRotation();    // 候选帧pKF到当前帧mpCurrentKF的R（R12）
+                cv::Mat t = pSolver->GetEstimatedTranslation(); // 候选帧pKF到当前帧mpCurrentKF的t（t12），当前帧坐标系下，方向由pKF指向当前帧
+                const float s = pSolver->GetEstimatedScale();   // 候选帧pKF到当前帧mpCurrentKF的变换尺度s（s12）
+                // 查找更多的匹配（成功的闭环匹配需要满足足够多的匹配特征点数，之前使用SearchByBoW进行特征点匹配时会有漏匹配）
+                // 通过Sim3变换，确定pKF1的特征点在pKF2中的大致区域，同理，确定pKF2的特征点在pKF1中的大致区域
+                // 在该区域内通过描述子进行匹配捕获pKF1和pKF2之前漏匹配的特征点，更新匹配vpMapPointMatches
                 matcher.SearchBySim3(mpCurrentKF,pKF,vpMapPointMatches,s,R,t,7.5);
 
+                // 步骤5：Sim3优化，只要有一个候选帧通过Sim3的求解与优化，就跳出停止对其它候选帧的判断
+                // OpenCV的Mat矩阵转成Eigen的Matrix类型
                 g2o::Sim3 gScm(Converter::toMatrix3d(R),Converter::toVector3d(t),s);
+                // 如果mbFixScale为true，则是6DoFf优化（双目 RGBD），如果是false，则是7DoF优化（单目）
+                // 优化mpCurrentKF与pKF对应的MapPoints间的Sim3，得到优化后的量gScm
                 const int nInliers = Optimizer::OptimizeSim3(mpCurrentKF, pKF, vpMapPointMatches, gScm, 10, mbFixScale);
 
                 // If optimization is succesful stop ransacs and continue
                 if(nInliers>=20)
                 {
                     bMatch = true;
+                    // mpMatchedKF就是最终闭环检测出来与当前帧形成闭环的关键帧
                     mpMatchedKF = pKF;
                     g2o::Sim3 gSmw(Converter::toMatrix3d(pKF->GetRotation()),Converter::toVector3d(pKF->GetTranslation()),1.0);
                     mg2oScw = gScm*gSmw;

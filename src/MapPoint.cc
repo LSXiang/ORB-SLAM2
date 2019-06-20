@@ -152,10 +152,12 @@ void MapPoint::EraseObservation(KeyFrame* pKF)
 
             mObservations.erase(pKF);
 
+            // 如果该keyFrame是参考帧，该Frame被删除后重新指定RefFrame
             if(mpRefKF==pKF)
                 mpRefKF=mObservations.begin()->first;
 
             // If only 2 observations or less, discard point
+            // 当观测到该点的相机数目少于2时，丢弃该点
             if(nObs<=2)
                 bBad=true;
         }

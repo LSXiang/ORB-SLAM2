@@ -183,6 +183,10 @@ void KeyFrame::UpdateBestCovisibles()
     mvOrderedWeights = vector<int>(lWs.begin(), lWs.end());    
 }
 
+/**
+ * @brief 得到与该关键帧连接的关键帧
+ * @return 连接的关键帧
+ */
 set<KeyFrame*> KeyFrame::GetConnectedKeyFrames()
 {
     unique_lock<mutex> lock(mMutexConnections);
@@ -192,6 +196,10 @@ set<KeyFrame*> KeyFrame::GetConnectedKeyFrames()
     return s;
 }
 
+/**
+ * @brief 得到与该关键帧连接的关键帧(已按权值排序)
+ * @return 连接的关键帧
+ */
 vector<KeyFrame*> KeyFrame::GetVectorCovisibleKeyFrames()
 {
     unique_lock<mutex> lock(mMutexConnections);
@@ -523,6 +531,11 @@ void KeyFrame::SetErase()
         }
     }
 
+    // 这个地方是不是应该：(!mbToBeErased)，(wubo???)
+    // SetBadFlag函数就是将mbToBeErased置为true，mbToBeErased就表示该KeyFrame被擦除了
+    //! 这里是对的, 如果先前在 LocalMapping 中 删除冗余关键帧中要删除该帧, 但是由于该帧用于
+    //! 回环检测中, 那么 mbNotErase 置为 true, 因此, SetBadFlag 函数就将 mbToBeErased 置为 true
+    //! 等待回环检测后不使用该帧时, 会对该帧调用该函数, 判断 mbNotErase 是否为 true 从而进行对该关键帧进行删除
     if(mbToBeErased)
     {
         SetBadFlag();
@@ -535,7 +548,7 @@ void KeyFrame::SetBadFlag()
         unique_lock<mutex> lock(mMutexConnections);
         if(mnId==0)
             return;
-        else if(mbNotErase)
+        else if(mbNotErase) // mbNotErase表示不应该擦除该KeyFrame，于是把mbToBeErased置为true，表示已经擦除了，其实没有擦除
         {
             mbToBeErased = true;
             return;
@@ -543,24 +556,26 @@ void KeyFrame::SetBadFlag()
     }
 
     for(map<KeyFrame*,int>::iterator mit = mConnectedKeyFrameWeights.begin(), mend=mConnectedKeyFrameWeights.end(); mit!=mend; mit++)
-        mit->first->EraseConnection(this);
+        mit->first->EraseConnection(this);  // 让其它的KeyFrame删除与自己的联系
 
     for(size_t i=0; i<mvpMapPoints.size(); i++)
         if(mvpMapPoints[i])
-            mvpMapPoints[i]->EraseObservation(this);
+            mvpMapPoints[i]->EraseObservation(this);  // 让与自己有联系的MapPoint删除与自己的联系
     {
         unique_lock<mutex> lock(mMutexConnections);
         unique_lock<mutex> lock1(mMutexFeatures);
 
+        // 清空自己与其它关键帧之间的联系
         mConnectedKeyFrameWeights.clear();
         mvpOrderedConnectedKeyFrames.clear();
 
-        // Update Spanning Tree
+        // Update Spanning Tree 更新生长树
         set<KeyFrame*> sParentCandidates;
         sParentCandidates.insert(mpParent);
 
         // Assign at each iteration one children with a parent (the pair with highest covisibility weight)
         // Include that children as new parent candidate for the rest
+        // 如果这个关键帧有自己的孩子关键帧, 告诉这些子关键帧, 它们的父关键帧不行了, 赶紧找新的父关键帧
         while(!mspChildrens.empty())
         {
             bool bContinue = false;
@@ -569,6 +584,7 @@ void KeyFrame::SetBadFlag()
             KeyFrame* pC;
             KeyFrame* pP;
 
+            // 遍历每一个子关键帧，让它们更新它们指向的父关键帧
             for(set<KeyFrame*>::iterator sit=mspChildrens.begin(), send=mspChildrens.end(); sit!=send; sit++)
             {
                 KeyFrame* pKF = *sit;
@@ -576,11 +592,20 @@ void KeyFrame::SetBadFlag()
                     continue;
 
                 // Check if a parent candidate is connected to the keyframe
+                // 子关键帧遍历每一个与它相连的关键帧（共视关键帧）
                 vector<KeyFrame*> vpConnected = pKF->GetVectorCovisibleKeyFrames();
                 for(size_t i=0, iend=vpConnected.size(); i<iend; i++)
                 {
                     for(set<KeyFrame*>::iterator spcit=sParentCandidates.begin(), spcend=sParentCandidates.end(); spcit!=spcend; spcit++)
                     {
+                      // 如果该帧的子节点和父节点（祖孙节点）之间存在连接关系（共视）
+                      // 举例：B-->A（B的父节点是A） C-->B（C的父节点是B） D--C（D与C相连） E--C（E与C相连） F--C（F与C相连） D-->A（D的父节点是A） E-->A（E的父节点是A）
+                      //      现在B挂了，于是C在与自己相连的D、E、F节点中找到父节点指向A的D
+                      //      此过程就是为了找到可以替换B的那个节点。
+                      // 上面例子中，B为当前要设置为SetBadFlag的关键帧
+                      //           A为spcit，也即sParentCandidates
+                      //           C为pKF,pC，也即mspChildrens中的一个
+                      //           D、E、F为vpConnected中的变量，由于C与D间的权重 比 C与E间的权重大，因此D为pP
                         if(vpConnected[i]->mnId == (*spcit)->mnId)
                         {
                             int w = pKF->GetWeight(vpConnected[i]);
@@ -598,8 +623,11 @@ void KeyFrame::SetBadFlag()
 
             if(bContinue)
             {
+                // 因为父节点死了，并且子节点找到了新的父节点，子节点更新自己的父节点
                 pC->ChangeParent(pP);
+                // 因为子节点找到了新的父节点并更新了父节点，那么该子节点升级，作为其它子节点的备选父节点
                 sParentCandidates.insert(pC);
+                // 该子节点处理完毕
                 mspChildrens.erase(pC);
             }
             else
@@ -607,9 +635,11 @@ void KeyFrame::SetBadFlag()
         }
 
         // If a children has no covisibility links with any parent candidate, assign to the original parent of this KF
+        // 如果还有子节点没有找到新的父节点
         if(!mspChildrens.empty())
             for(set<KeyFrame*>::iterator sit=mspChildrens.begin(); sit!=mspChildrens.end(); sit++)
             {
+                // 直接把父节点的父节点作为自己的父节点
                 (*sit)->ChangeParent(mpParent);
             }
 
