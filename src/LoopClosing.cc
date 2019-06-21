@@ -478,11 +478,11 @@ bool LoopClosing::ComputeSim3()
 }
 
 /**
- * @brief 闭环
+ * @brief 修正闭环
  *
  * 1. 通过求解的Sim3以及相对姿态关系，调整与当前帧相连的关键帧位姿以及这些关键帧观测到的MapPoints的位置（相连关键帧---当前帧）
  * 2. 将闭环帧以及闭环帧相连的关键帧的MapPoints和与当前帧相连的关键帧的点进行匹配（相连关键帧+当前帧---闭环帧+相连关键帧）
- * 3. 通过MapPoints的匹配关系更新这些帧之间的连接关系，即更新covisibility graph
+ * 3. 通过MapPoints的匹配关系更新这些帧之间的连接关系，即更新 covisibility graph
  * 4. 对Essential Graph（Pose Graph）进行优化，MapPoints的位置则根据优化后的位姿做相对应的调整
  * 5. 创建线程进行全局Bundle Adjustment
  */
@@ -524,9 +524,18 @@ void LoopClosing::CorrectLoop()
     mpCurrentKF->UpdateConnections();
 
     // Retrive keyframes connected to the current keyframe and compute corrected Sim3 pose by propagation
+    // 步骤2: 通过位姿传播, 得到 Sim3 优化后, 与当前帧连接的关键帧的位姿, 以及它们的 MapPoints
+    // 当前帧与世界坐标系之间的 Sim3 变换在 ComputeSim3 函数中已经确定并优化了,
+    // 通过相对位姿关系, 可以确定这些相连帧与世界坐标系之间 Sim3 变换
+
+    // 取出当前帧相连的关键帧, 包括当前帧
     mvpCurrentConnectedKFs = mpCurrentKF->GetVectorCovisibleKeyFrames();
     mvpCurrentConnectedKFs.push_back(mpCurrentKF);
 
+    //! 注意: 这里的 KeyFrameAndPose 是
+    //! typedef map<KeyFrame*,g2o::Sim3,std::less<KeyFrame*>,
+    //!     Eigen::aligned_allocator<std::pair<const KeyFrame*, g2o::Sim3> > > KeyFrameAndPose;
+    //! 其中 map 的空间分配器从标准库改成了 Eigen 的对齐空间分配器了
     KeyFrameAndPose CorrectedSim3, NonCorrectedSim3;
     CorrectedSim3[mpCurrentKF]=mg2oScw;
     cv::Mat Twc = mpCurrentKF->GetPoseInverse();
@@ -536,20 +545,25 @@ void LoopClosing::CorrectLoop()
         // Get Map Mutex
         unique_lock<mutex> lock(mpMap->mMutexMapUpdate);
 
+        // 步骤2.1: 通过位姿传播, 得到 Sim3 调整后其它与当前帧相连帧的位姿 (只是得到, 还没有修正)
         for(vector<KeyFrame*>::iterator vit=mvpCurrentConnectedKFs.begin(), vend=mvpCurrentConnectedKFs.end(); vit!=vend; vit++)
         {
             KeyFrame* pKFi = *vit;
 
             cv::Mat Tiw = pKFi->GetPose();
 
+            // currentKF在前面已经添加
             if(pKFi!=mpCurrentKF)
             {
+                // 得到当前帧到 pKFi 帧的相对变换
                 cv::Mat Tic = Tiw*Twc;
                 cv::Mat Ric = Tic.rowRange(0,3).colRange(0,3);
                 cv::Mat tic = Tic.rowRange(0,3).col(3);
                 g2o::Sim3 g2oSic(Converter::toMatrix3d(Ric),Converter::toVector3d(tic),1.0);
+                // 当前帧的位姿固定不动, 其它的关键帧依据相对关系得到 Sim3 调整的位姿
                 g2o::Sim3 g2oCorrectedSiw = g2oSic*mg2oScw;
                 //Pose corrected with the Sim3 of the loop closure
+                // 得到闭环 g2o 优化后各个关键帧的位姿
                 CorrectedSim3[pKFi]=g2oCorrectedSiw;
             }
 
@@ -557,10 +571,12 @@ void LoopClosing::CorrectLoop()
             cv::Mat tiw = Tiw.rowRange(0,3).col(3);
             g2o::Sim3 g2oSiw(Converter::toMatrix3d(Riw),Converter::toVector3d(tiw),1.0);
             //Pose without correction
+            // 当前帧相连关键帧, 没有进行闭环 g2o 优化之前的位姿
             NonCorrectedSim3[pKFi]=g2oSiw;
         }
 
         // Correct all MapPoints obsrved by current keyframe and neighbors, so that they align with the other side of the loop
+        // 步骤2.2: 步骤2.1 得到调整相连帧位姿后, 修正这些关键帧的 MapPoints
         for(KeyFrameAndPose::iterator mit=CorrectedSim3.begin(), mend=CorrectedSim3.end(); mit!=mend; mit++)
         {
             KeyFrame* pKFi = mit->first;
@@ -577,10 +593,11 @@ void LoopClosing::CorrectLoop()
                     continue;
                 if(pMPi->isBad())
                     continue;
-                if(pMPi->mnCorrectedByKF==mpCurrentKF->mnId)
+                if(pMPi->mnCorrectedByKF==mpCurrentKF->mnId)  // 防止重复修正
                     continue;
 
                 // Project with non-corrected pose and project back with corrected pose
+                // 将该未校正的 eigP3Dw 先从世界坐标系映射到未校正的 pKFi 相机坐标系, 然后在反映射到校正后的世界坐标系下
                 cv::Mat P3Dw = pMPi->GetWorldPos();
                 Eigen::Matrix<double,3,1> eigP3Dw = Converter::toVector3d(P3Dw);
                 Eigen::Matrix<double,3,1> eigCorrectedP3Dw = g2oCorrectedSwi.map(g2oSiw.map(eigP3Dw));
@@ -589,10 +606,11 @@ void LoopClosing::CorrectLoop()
                 pMPi->SetWorldPos(cvCorrectedP3Dw);
                 pMPi->mnCorrectedByKF = mpCurrentKF->mnId;
                 pMPi->mnCorrectedReference = pKFi->mnId;
-                pMPi->UpdateNormalAndDepth();
+                pMPi->UpdateNormalAndDepth(); // 更新世界点的客观方向和深度值
             }
 
             // Update keyframe pose with corrected Sim3. First transform Sim3 to SE3 (scale translation)
+            // 步骤2.3: 将 Sim3转换为 SE3, 根据更新的 Sim3, 更新关键帧的位姿
             Eigen::Matrix3d eigR = g2oCorrectedSiw.rotation().toRotationMatrix();
             Eigen::Vector3d eigt = g2oCorrectedSiw.translation();
             double s = g2oCorrectedSiw.scale();
@@ -604,6 +622,7 @@ void LoopClosing::CorrectLoop()
             pKFi->SetPose(correctedTiw);
 
             // Make sure connections are updated
+            // 步骤2.4: 根据共视关系更新当前帧与其它关键帧之间的联系
             pKFi->UpdateConnections();
         }
 
