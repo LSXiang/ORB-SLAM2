@@ -342,6 +342,8 @@ int ORBmatcher::SearchByBoW(KeyFrame* pKF,Frame &F, vector<MapPoint*> &vpMapPoin
     return nmatches;
 }
 
+// 根据Sim3变换，将每个vpPoints投影到pKF上，并根据尺度确定一个搜索区域，
+// 根据该MapPoint的描述子与该区域内的特征点进行匹配，如果匹配误差小于TH_LOW即匹配成功，更新vpMatched
 int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapPoint*> &vpPoints, vector<MapPoint*> &vpMatched, int th)
 {
     // Get Calibration Parameters for later projection
@@ -352,23 +354,26 @@ int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapP
 
     // Decompose Scw
     cv::Mat sRcw = Scw.rowRange(0,3).colRange(0,3);
-    const float scw = sqrt(sRcw.row(0).dot(sRcw.row(0)));
+    const float scw = sqrt(sRcw.row(0).dot(sRcw.row(0))); // 计算得到尺度s
     cv::Mat Rcw = sRcw/scw;
-    cv::Mat tcw = Scw.rowRange(0,3).col(3)/scw;
-    cv::Mat Ow = -Rcw.t()*tcw;
+    cv::Mat tcw = Scw.rowRange(0,3).col(3)/scw; // pKF坐标系下，世界坐标系到pKF的位移，方向由世界坐标系指向pKF
+    cv::Mat Ow = -Rcw.t()*tcw;  // 世界坐标系下，pKF到世界坐标系的位移（世界坐标系原点相对pKF的位置），方向由pKF指向世界坐标系
 
     // Set of MapPoints already found in the KeyFrame
+    // 使用set类型，并去除没有匹配的点，用于快速检索某个MapPoint是否有匹配
     set<MapPoint*> spAlreadyFound(vpMatched.begin(), vpMatched.end());
     spAlreadyFound.erase(static_cast<MapPoint*>(NULL));
 
     int nmatches=0;
 
     // For each Candidate MapPoint Project and Match
+    // 遍历所有的MapPoints
     for(int iMP=0, iendMP=vpPoints.size(); iMP<iendMP; iMP++)
     {
         MapPoint* pMP = vpPoints[iMP];
 
         // Discard Bad MapPoints and already found
+        // 丢弃坏的MapPoints和已经匹配上的MapPoints
         if(pMP->isBad() || spAlreadyFound.count(pMP))
             continue;
 
@@ -395,6 +400,7 @@ int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapP
             continue;
 
         // Depth must be inside the scale invariance region of the point
+        // 判断距离是否在尺度协方差范围内
         const float maxDistance = pMP->GetMaxDistanceInvariance();
         const float minDistance = pMP->GetMinDistanceInvariance();
         cv::Mat PO = p3Dw-Ow;
@@ -412,6 +418,7 @@ int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapP
         int nPredictedLevel = pMP->PredictScale(dist,pKF);
 
         // Search in a radius
+        // 根据尺度确定搜索半径
         const float radius = th*pKF->mvScaleFactors[nPredictedLevel];
 
         const vector<size_t> vIndices = pKF->GetFeaturesInArea(u,v,radius);
@@ -424,6 +431,7 @@ int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapP
 
         int bestDist = 256;
         int bestIdx = -1;
+        // 遍历搜索区域内所有特征点，与该MapPoint的描述子进行匹配
         for(vector<size_t>::const_iterator vit=vIndices.begin(), vend=vIndices.end(); vit!=vend; vit++)
         {
             const size_t idx = *vit;
@@ -446,6 +454,7 @@ int ORBmatcher::SearchByProjection(KeyFrame* pKF, cv::Mat Scw, const vector<MapP
             }
         }
 
+        // 该MapPoint与bestIdx对应的特征点匹配成功
         if(bestDist<=TH_LOW)
         {
             vpMatched[bestIdx]=pMP;
